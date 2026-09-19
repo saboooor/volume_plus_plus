@@ -23,21 +23,25 @@ import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -579,8 +583,7 @@ private fun InfoButton(title: String, body: String) {
 }
 
 /**
- * The style list. With [enabled] false every row is inert — no selecting, no per-style editor — and
- * greyed to match, so the section reads as unavailable rather than merely unresponsive.
+ * Style selection menu. With [enabled] false the selector and editor are inert and greyed out.
  */
 @Composable
 private fun SkinPicker(
@@ -589,6 +592,9 @@ private fun SkinPicker(
     onEdit: (OverlayVersion) -> Unit,
     enabled: Boolean = true,
 ) {
+    val s = strings()
+    var menuExpanded by remember { mutableStateOf(false) }
+
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -597,36 +603,68 @@ private fun SkinPicker(
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 4.dp),
     ) {
-        Column(modifier = Modifier.padding(vertical = 4.dp)) {
-            OverlayVersion.entries.forEach { option ->
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .selectable(
-                            selected = option == selected,
-                            enabled = enabled,
-                            onClick = { onSelect(option) },
-                        )
-                        .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(enabled = enabled) { menuExpanded = true }
+                        .padding(vertical = 8.dp),
                 ) {
-                    RadioButton(
-                        selected = option == selected,
-                        enabled = enabled,
-                        onClick = { onSelect(option) },
-                    )
-                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = option.label,
+                        text = selected.label,
                         style = MaterialTheme.typography.bodyLarge,
-                        color = if (enabled) Color.Unspecified else disabledContentColor(),
+                        color = if (enabled) MaterialTheme.colorScheme.onSurface else disabledContentColor(),
                         modifier = Modifier.weight(1f),
                     )
-                    // Each style gets its own independent editor (position + colours).
-                    TextButton(onClick = { onEdit(option) }, enabled = enabled) {
-                        Text(strings().overlayEdit)
+                    Icon(
+                        painter = painterResource(R.drawable.ic_expand_down),
+                        contentDescription = null,
+                        tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else disabledContentColor(),
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .size(20.dp),
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    OverlayVersion.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            onClick = {
+                                onSelect(option)
+                                menuExpanded = false
+                            },
+                            trailingIcon = {
+                                if (option == selected) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_check),
+                                        contentDescription = s.selected,
+                                    )
+                                }
+                            },
+                        )
                     }
                 }
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            TextButton(
+                onClick = { onEdit(selected) },
+                enabled = enabled,
+            ) {
+                Text(s.overlayEdit)
             }
         }
     }
