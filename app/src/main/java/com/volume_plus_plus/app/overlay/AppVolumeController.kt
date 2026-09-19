@@ -3,6 +3,8 @@ package com.volume_plus_plus.app.overlay
 import android.content.Context
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
+import android.content.pm.ApplicationInfo
+import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -52,6 +54,27 @@ import kotlinx.coroutines.launch
  * Per-app playback control needs the Android 8+ playback-configuration APIs, so on older releases
  * this controller stays inert (there are no per-app players to manage anyway).
  */
+/** An actively-playing application with its active audio player instances. */
+data class ActiveAppPlayer(
+    val packageName: String,
+    val label: String,
+    val icon: Drawable?,
+    val piids: List<Int>,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ActiveAppPlayer) return false
+        return packageName == other.packageName && label == other.label && piids == other.piids
+    }
+
+    override fun hashCode(): Int {
+        var result = packageName.hashCode()
+        result = 31 * result + label.hashCode()
+        result = 31 * result + piids.hashCode()
+        return result
+    }
+}
+
 class AppVolumeController(context: Context) {
 
     private val appContext = context.applicationContext
@@ -109,6 +132,9 @@ class AppVolumeController(context: Context) {
     fun destroy() {
         stop()
         scope.coroutineContext[Job]?.cancel()
+        synchronized(AppVolumeController::class.java) {
+            if (instance === this) instance = null
+        }
     }
 
     // ── panel-facing API (main thread) ──────────────────────────────────────────────────────────────
@@ -119,6 +145,35 @@ class AppVolumeController(context: Context) {
      * user set earlier this session instead of snapping back to full every time the panel opens.
      */
     fun volumeFor(pkg: String): Float = sessions[pkg]?.volume ?: DEFAULT_VOLUME
+
+    suspend fun queryPlayingApps(): List<ActiveAppPlayer> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return emptyList()
+        if (!audioManager.isMusicActive()) return emptyList()
+        val players = if (PrivilegedManager.isReady) PrivilegedManager.getActivePlayers() else emptyList()
+        val pm = appContext.packageManager
+        return players
+            .filter { it.packageName != appContext.packageName && !isSystemApp(it.packageName) }
+            .groupBy { it.packageName }
+            .entries
+            .take(10)
+            .map { (pkg, group) ->
+                ActiveAppPlayer(
+                    packageName = pkg,
+                    label = runCatching {
+                        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+                    }.getOrDefault(pkg),
+                    icon = runCatching { pm.getApplicationIcon(pkg) }.getOrNull(),
+                    piids = group.map { it.piid },
+                )
+            }
+    }
+
+    private fun isSystemApp(pkg: String): Boolean = runCatching {
+        val info = appContext.packageManager.getApplicationInfo(pkg, 0)
+        val system = info.flags and ApplicationInfo.FLAG_SYSTEM != 0
+        val updated = info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
+        system && !updated
+    }.getOrDefault(true)
 
     /**
      * Record and apply a user-chosen [level] for [pkg]. Creates the session if needed (so a volume
@@ -247,7 +302,18 @@ class AppVolumeController(context: Context) {
         }
     }
 
-    private companion object {
+    companion object {
+        @Volatile
+        private var instance: AppVolumeController? = null
+
+        fun get(context: Context): AppVolumeController {
+            return instance ?: synchronized(this) {
+                instance ?: AppVolumeController(context.applicationContext).also {
+                    it.start()
+                    instance = it
+                }
+            }
+        }
         const val DEFAULT_VOLUME = 1f
 
         /** How often to re-check while something is playing (matches the panel's own app sync). */

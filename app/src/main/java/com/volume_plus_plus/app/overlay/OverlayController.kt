@@ -13,6 +13,11 @@ import android.graphics.PointF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.content.res.ColorStateList
+import android.graphics.drawable.RippleDrawable
+import android.view.MotionEvent
+import android.view.SoundEffectConstants
+import android.view.ViewConfiguration
 import android.app.NotificationManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -222,6 +227,12 @@ class OverlayController(
     private var root: ViewGroup? = null
     /** The actual panel, hosted inside [root]; this is what gets populated and slide-animated. */
     private var panel: ViewGroup? = null
+    /** The floating trigger button on screen, shown when the floating button mode is enabled. */
+    private var floatingButtonView: View? = null
+    private var floatingCircleView: View? = null
+    private var floatingButtonParams: WindowManager.LayoutParams? = null
+    private var floatingDismissing = false
+    private val hideFloatingRunnable = Runnable { dismissFloatingWithAnimation() }
     // A placeholder; every render()/show() rebuilds it from the current skin + customization.
     private var style: OverlayStyle = styleFor(curSkin(), isDark())
     private var expanded = false
@@ -356,6 +367,7 @@ class OverlayController(
     }
 
     fun show() {
+        hideFloatingButton(animate = false)
         // In live-edit the component being edited decides whether the expanded sheet is drawn (the
         // output picker also draws the sheet, then layers its modal on top). A version with no separate
         // expanded panel (Android 7–8) instead shows its single panel fully expanded, so every row is
@@ -473,7 +485,309 @@ class OverlayController(
         if (config.component == PanelComponent.OUTPUT) openOutputPicker()
     }
 
+    fun isShowing(): Boolean = root != null && !dismissing
+    fun isExpandedShowing(): Boolean = root != null && !dismissing && expanded
+    fun isFloatingButtonShowing(): Boolean = floatingButtonView != null && !floatingDismissing
+
+    fun showFloatingButton() {
+        if (root != null && !dismissing) return
+        handler.removeCallbacks(hideFloatingRunnable)
+
+        val circle = floatingCircleView
+        if (floatingButtonView != null && circle != null) {
+            circle.animate().cancel()
+            circle.translationX = 0f
+            circle.translationY = 0f
+            circle.alpha = 1f
+            floatingDismissing = false
+            handler.postDelayed(hideFloatingRunnable, prefs.getPopupDurationMs())
+            return
+        }
+
+        style = buildStyle()
+        val dm = context.resources.displayMetrics
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
+        val size = dp(FLOATING_BTN_SIZE_DP)
+
+        val savedX = prefs.getFloatingButtonX()
+        val savedY = prefs.getFloatingButtonY()
+
+        val posX = if (savedX in 0..(screenW - size)) savedX else (screenW - size - dp(16)).coerceAtLeast(0)
+        val posY = if (savedY in dp(24)..(screenH - size)) savedY else ((screenH - size) / 2).coerceAtLeast(dp(24))
+
+        val button = buildFloatingButton(posX, posY, screenW, screenH, size)
+        floatingButtonView = button
+        disableForceDark(button)
+
+        // Using FLAG_NOT_TOUCH_MODAL with FLAG_WATCH_OUTSIDE_TOUCH ensures outside touches
+        // (including taps on the system volume popup or any underlying app) pass through unblocked,
+        // while ACTION_OUTSIDE lets us cleanly dismiss the floating button on any outside tap.
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = posX
+            y = posY
+        }
+        floatingButtonParams = params
+
+        floatingDismissing = false
+        runCatching {
+            windowManager.addView(button, params)
+            floatingCircleView?.let { animateFloatingEntrance(it, posX, screenW, size) }
+            handler.postDelayed(hideFloatingRunnable, prefs.getPopupDurationMs())
+        }.onFailure {
+            floatingButtonView = null
+            floatingCircleView = null
+            floatingButtonParams = null
+        }
+    }
+
+    private fun floatingExitOffset(posX: Int, screenW: Int, size: Int): PointF {
+        return if (posX >= (screenW - size) / 2) {
+            PointF(dp(18f).toFloat(), 0f)
+        } else {
+            PointF(-dp(18f).toFloat(), 0f)
+        }
+    }
+
+    private fun animateFloatingEntrance(circle: View, posX: Int, screenW: Int, size: Int) {
+        val exit = floatingExitOffset(posX, screenW, size)
+        circle.alpha = 0f
+        circle.translationX = exit.x
+        circle.translationY = exit.y
+        circle.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                circle.viewTreeObserver.removeOnPreDrawListener(this)
+                if (circle !== floatingCircleView || floatingDismissing) {
+                    circle.alpha = 1f
+                    return true
+                }
+                circle.animate().cancel()
+                circle.animate()
+                    .translationX(0f)
+                    .translationY(0f)
+                    .alpha(1f)
+                    .setInterpolator(enterInterpolator)
+                    .setDuration(SLIDE_IN_MS)
+                    .start()
+                return true
+            }
+        })
+    }
+
+    private fun dismissFloatingWithAnimation() {
+        val btn = floatingButtonView
+        val circle = floatingCircleView
+        if (btn == null || circle == null || floatingDismissing) {
+            if (btn != null && !floatingDismissing) hideFloatingButton(animate = false)
+            return
+        }
+        floatingDismissing = true
+        handler.removeCallbacks(hideFloatingRunnable)
+
+        val dm = context.resources.displayMetrics
+        val size = dp(FLOATING_BTN_SIZE_DP)
+        val currentX = floatingButtonParams?.x ?: prefs.getFloatingButtonX()
+        val exit = floatingExitOffset(currentX, dm.widthPixels, size)
+
+        circle.animate().cancel()
+        circle.animate()
+            .translationX(exit.x)
+            .translationY(exit.y)
+            .alpha(0f)
+            .setInterpolator(exitInterpolator)
+            .setDuration(SLIDE_OUT_MS)
+            .withEndAction { hideFloatingButton(animate = false) }
+            .start()
+    }
+
+    fun hideFloatingButton(animate: Boolean = true) {
+        if (animate) {
+            dismissFloatingWithAnimation()
+            return
+        }
+        handler.removeCallbacks(hideFloatingRunnable)
+        val btn = floatingButtonView
+        floatingButtonView = null
+        floatingCircleView = null
+        floatingButtonParams = null
+        floatingDismissing = false
+        if (btn != null) {
+            runCatching { windowManager.removeView(btn) }
+        }
+    }
+
+    fun showExpanded() {
+        hideFloatingButton(animate = false)
+        expanded = true
+        ringerMenuOpen = false
+        style = buildStyle()
+        render(forceEntrance = true)
+    }
+
+    fun onExternalVolumeKey() {
+        if (root != null && !dismissing) {
+            mediaSlider?.post {
+                mediaSlider?.level = streamLevel(AudioManager.STREAM_MUSIC)
+            }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun buildFloatingButton(
+        initialX: Int,
+        initialY: Int,
+        screenW: Int,
+        screenH: Int,
+        size: Int,
+    ): View {
+        val container = FrameLayout(context).apply {
+            layoutParams = ViewGroup.LayoutParams(size, size)
+            clipChildren = false
+            clipToPadding = false
+        }
+
+        val circle = FrameLayout(context).apply {
+            val pad = dp(4)
+            val innerLp = FrameLayout.LayoutParams(size - pad * 2, size - pad * 2).apply {
+                gravity = Gravity.CENTER
+            }
+            layoutParams = innerLp
+
+            // Match custom volume popup styling: containerColor background, pressedHaloColor ripple, elevation
+            val bgDrawable = ovalBg(style.containerColor)
+            val mask = ovalBg(Color.WHITE)
+            background = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                RippleDrawable(ColorStateList.valueOf(style.pressedHaloColor), bgDrawable, mask)
+            } else {
+                bgDrawable
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                elevation = dp(8f).toFloat()
+            }
+
+            // Match custom volume popup button icon and color:
+            val iconColor = style.overflowColor ?: style.accentColor
+            val expandIcon = when (curSkin()) {
+                OverlaySkin.ANDROID_7_8 -> R.drawable.ic_expand_down
+                OverlaySkin.ANDROID_9_11 -> if (legacyVersion() == LegacyVersion.ANDROID_9) R.drawable.ic_settings_gear else R.drawable.ic_tune
+                else -> R.drawable.ic_more_horiz
+            }
+            val iconView = ImageView(context).apply {
+                val iconLp = FrameLayout.LayoutParams(dp(26), dp(26)).apply {
+                    gravity = Gravity.CENTER
+                }
+                layoutParams = iconLp
+                setImageDrawable(tintedIcon(expandIcon, iconColor))
+            }
+            addView(iconView)
+        }
+        floatingCircleView = circle
+        container.addView(circle)
+
+        val slop = ViewConfiguration.get(context).scaledTouchSlop
+        var startRawX = 0f
+        var startRawY = 0f
+        var startWinX = initialX
+        var startWinY = initialY
+        var isDragging = false
+
+        container.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_OUTSIDE -> {
+                    dismissFloatingWithAnimation()
+                    false
+                }
+                MotionEvent.ACTION_DOWN -> {
+                    startRawX = ev.rawX
+                    startRawY = ev.rawY
+                    startWinX = floatingButtonParams?.x ?: 0
+                    startWinY = floatingButtonParams?.y ?: 0
+                    isDragging = false
+                    handler.removeCallbacks(hideFloatingRunnable)
+                    circle.animate().scaleX(0.92f).scaleY(0.92f).setDuration(100L).start()
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = ev.rawX - startRawX
+                    val dy = ev.rawY - startRawY
+                    if (!isDragging && (abs(dx) > slop || abs(dy) > slop)) {
+                        isDragging = true
+                    }
+                    if (isDragging) {
+                        val dm = context.resources.displayMetrics
+                        val p = floatingButtonParams ?: return@setOnTouchListener true
+                        p.x = (startWinX + dx).roundToInt().coerceIn(0, (dm.widthPixels - size).coerceAtLeast(0))
+                        p.y = (startWinY + dy).roundToInt().coerceIn(dp(24), (dm.heightPixels - size).coerceAtLeast(dp(24)))
+                        runCatching { windowManager.updateViewLayout(container, p) }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    circle.animate().scaleX(1f).scaleY(1f).setDuration(100L).start()
+                    if (!isDragging) {
+                        circle.playSoundEffect(SoundEffectConstants.CLICK)
+                        showExpanded()
+                    } else {
+                        floatingButtonParams?.let { p ->
+                            prefs.setFloatingButtonX(p.x)
+                            prefs.setFloatingButtonY(p.y)
+                        }
+                        handler.postDelayed(hideFloatingRunnable, prefs.getPopupDurationMs())
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    circle.animate().scaleX(1f).scaleY(1f).setDuration(100L).start()
+                    handler.postDelayed(hideFloatingRunnable, prefs.getPopupDurationMs())
+                    true
+                }
+                else -> false
+            }
+        }
+
+        disableForceDark(container)
+        return container
+    }
+
+    private fun buildEmptyAppsView(): View {
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(24), dp(36), dp(24), dp(36))
+
+            val icon = ImageView(context).apply {
+                setImageDrawable(tintedIcon(R.drawable.ic_stream_media, fade(style.iconTint, 0.45f)))
+                val p = dp(36)
+                layoutParams = LinearLayout.LayoutParams(p, p).apply {
+                    bottomMargin = dp(12)
+                }
+            }
+            addView(icon)
+
+            val text = TextView(context).apply {
+                text = strings.overlayNoActiveApps
+                setTextColor(fade(style.textColor, 0.65f))
+                textSize = 14f
+                gravity = Gravity.CENTER
+            }
+            addView(text)
+        }
+        disableForceDark(layout)
+        return layout
+    }
+
     fun hide() {
+        hideFloatingButton(animate = false)
         handler.removeCallbacks(hideRunnable)
         stopAppSync()
         loadJob?.cancel()
@@ -513,6 +827,7 @@ class OverlayController(
     }
 
     fun destroy() {
+        hideFloatingButton(animate = false)
         hide()
         scope.coroutineContext[Job]?.cancel()
     }
@@ -525,6 +840,7 @@ class OverlayController(
         // The active component (collapsed vs expanded) can change between renders, and each carries its
         // own colour overrides, so rebuild the style every pass.
         style = buildStyle()
+        hideFloatingButton(animate = false)
         if (preview != null) { renderPreview(); return }
         val sig = "${curSkin()}|${isDark()}|$expanded|${AppSettings.language.value.code}"
         // A fresh appearance (nothing on screen yet), or an explicit expand into the "Sound" sheet,
@@ -857,7 +1173,7 @@ class OverlayController(
         // taps DONE or outside; only the compact panels auto-hide.
         if (isRichPanel() && (expanded || outputPicker)) return
         // The Android 7–8 panel lingers longer (~6 s) before dismissing itself.
-        val delay = if (curSkin() == OverlaySkin.ANDROID_7_8) AUTO_HIDE_78_MS else AUTO_HIDE_MS
+        val delay = if (curSkin() == OverlaySkin.ANDROID_7_8) (prefs.getPopupDurationMs() * 1.5f).toLong() else prefs.getPopupDurationMs()
         handler.postDelayed(hideRunnable, delay)
     }
 
@@ -1291,8 +1607,18 @@ class OverlayController(
      * animates the change.
      */
     private fun applyGenericExpandState() {
-        val vis = if (expanded) View.VISIBLE else View.GONE
-        generic78ExtraRows.forEach { it.visibility = vis }
+        val onlyMixing = prefs.isOnlyVolumeMixingEnabled() && preview == null
+        if (onlyMixing && expanded) {
+            generic78OrderedRows.forEach { row ->
+                row.visibility = if (row === generic78AppsBox) View.VISIBLE else View.GONE
+            }
+            alarmsOnlyRow?.visibility = View.GONE
+        } else {
+            val vis = if (expanded) View.VISIBLE else View.GONE
+            generic78ExtraRows.forEach { it.visibility = vis }
+            mediaSlider?.visibility = View.VISIBLE
+            refreshAlarmsOnlyFooter()
+        }
         // The first visible row sits flush; every later visible row gets the inter-row gap.
         var seenVisible = false
         generic78OrderedRows.forEach { row ->
@@ -1624,35 +1950,38 @@ class OverlayController(
         // landscape, where vertical space is tight) stays fully on-screen; the title and footer stay
         // pinned. When the rows fit, the scroller wraps to their height so the sheet isn't oversized.
         val rows = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        // The sheet rows use the outlined icon set (hollow-head note, hollow handset, outlined
-        // bell) across Android 11–14; 9 and 10 hide the row icons entirely.
-        addStreamRow911(rows, R.drawable.ic_stream_media_outline, strings.panelRowMedia, AudioManager.STREAM_MUSIC)
-        addStreamRow911(rows, R.drawable.ic_stream_call_outline, strings.panelRowCall, AudioManager.STREAM_VOICE_CALL)
-        if (isModernSheet() && isAndroid14IconSet()) {
-            // Android 14 draws Ring as the ringing handset; unlike Media it keeps that icon even
-            // at zero — the stock sheet doesn't slash it, it just hands off to the disabled
-            // Notification row below.
-            addStreamRow911(
-                rows,
-                R.drawable.ic_stream_ring_phone,
-                strings.panelRowRing,
-                AudioManager.STREAM_RING,
-                afterChange = { refreshExpandedNotificationAvailability() },
-            )
-            val (notifRow, notif) =
-                addStreamRow911(rows, R.drawable.ic_stream_notification, strings.panelRowNotification, AudioManager.STREAM_NOTIFICATION)
-            val disabled = disabledNotificationRow911()
-            notifSlider = notif
-            notifSliderRow = notifRow
-            notifDisabledRow = disabled
-            rows.addView(disabled, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-            refreshExpandedNotificationAvailability()
-        } else {
-            // The outlined bell is what both the Android 9–11 and Android 12 sheets actually drew
-            // (AOSP's ic_volume_ringer is unchanged through 13).
-            addStreamRow911(rows, R.drawable.ic_stream_ring_outline, strings.panelRowRingNotification, AudioManager.STREAM_RING, tieNotification = true)
+        val onlyMixing = prefs.isOnlyVolumeMixingEnabled() && preview == null
+        if (!onlyMixing) {
+            // The sheet rows use the outlined icon set (hollow-head note, hollow handset, outlined
+            // bell) across Android 11–14; 9 and 10 hide the row icons entirely.
+            addStreamRow911(rows, R.drawable.ic_stream_media_outline, strings.panelRowMedia, AudioManager.STREAM_MUSIC)
+            addStreamRow911(rows, R.drawable.ic_stream_call_outline, strings.panelRowCall, AudioManager.STREAM_VOICE_CALL)
+            if (isModernSheet() && isAndroid14IconSet()) {
+                // Android 14 draws Ring as the ringing handset; unlike Media it keeps that icon even
+                // at zero — the stock sheet doesn't slash it, it just hands off to the disabled
+                // Notification row below.
+                addStreamRow911(
+                    rows,
+                    R.drawable.ic_stream_ring_phone,
+                    strings.panelRowRing,
+                    AudioManager.STREAM_RING,
+                    afterChange = { refreshExpandedNotificationAvailability() },
+                )
+                val (notifRow, notif) =
+                    addStreamRow911(rows, R.drawable.ic_stream_notification, strings.panelRowNotification, AudioManager.STREAM_NOTIFICATION)
+                val disabled = disabledNotificationRow911()
+                notifSlider = notif
+                notifSliderRow = notifRow
+                notifDisabledRow = disabled
+                rows.addView(disabled, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+                refreshExpandedNotificationAvailability()
+            } else {
+                // The outlined bell is what both the Android 9–11 and Android 12 sheets actually drew
+                // (AOSP's ic_volume_ringer is unchanged through 13).
+                addStreamRow911(rows, R.drawable.ic_stream_ring_outline, strings.panelRowRingNotification, AudioManager.STREAM_RING, tieNotification = true)
+            }
+            addStreamRow911(rows, R.drawable.ic_stream_alarm, strings.panelRowAlarm, AudioManager.STREAM_ALARM)
         }
-        addStreamRow911(rows, R.drawable.ic_stream_alarm, strings.panelRowAlarm, AudioManager.STREAM_ALARM)
 
         // Per-app sliders (Volume++'s reason for existing) are appended in the same native row style.
         val appsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -1929,34 +2258,37 @@ class OverlayController(
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(10), dp(16), 0)
         }
-        rows.addView(
-            outputCard(),
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                .apply { bottomMargin = dp(12) },
-        )
+        val onlyMixing = prefs.isOnlyVolumeMixingEnabled() && preview == null
+        if (!onlyMixing) {
+            rows.addView(
+                outputCard(),
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    .apply { bottomMargin = dp(12) },
+            )
 
-        // Media keeps the note icon, switching only to Android 15's crossed speaker at mute.
-        addPillRow(rows, R.drawable.ic_stream_media, "Media", AudioManager.STREAM_MUSIC, mutedIconRes = R.drawable.ic_ring_megaphone_off)
-        addPillRow(rows, R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
-        // Ring swaps to the vibrate icon at zero; muting it makes Notification unavailable live;
-        // raising it back
-        // restores the Notification slider — matching the OS's linked ring/notification behaviour.
-        addPillRow(
-            rows, R.drawable.ic_stream_ring_phone, "Ring", AudioManager.STREAM_RING,
-            mutedIconRes = R.drawable.ic_ring_vibrate,
-            afterChange = { refreshNotificationAvailability() },
-        )
-        // Both the active Notification slider and its greyed "unavailable" stand-in are laid out; only
-        // the one matching the current ringer state is visible, and they swap live via the Ring row.
-        val notif = makePillSlider(R.drawable.ic_stream_notification, "Notification", AudioManager.STREAM_NOTIFICATION)
-        val notifDisabled = disabledNotificationRow()
-        notifSlider = notif
-        notifSliderRow = notif
-        notifDisabledRow = notifDisabled
-        rows.addView(notif, pillRowParams())
-        rows.addView(notifDisabled, pillRowParams())
-        refreshNotificationAvailability()
-        addPillRow(rows, R.drawable.ic_stream_alarm, "Alarm", AudioManager.STREAM_ALARM)
+            // Media keeps the note icon, switching only to Android 15's crossed speaker at mute.
+            addPillRow(rows, R.drawable.ic_stream_media, "Media", AudioManager.STREAM_MUSIC, mutedIconRes = R.drawable.ic_ring_megaphone_off)
+            addPillRow(rows, R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
+            // Ring swaps to the vibrate icon at zero; muting it makes Notification unavailable live;
+            // raising it back
+            // restores the Notification slider — matching the OS's linked ring/notification behaviour.
+            addPillRow(
+                rows, R.drawable.ic_stream_ring_phone, "Ring", AudioManager.STREAM_RING,
+                mutedIconRes = R.drawable.ic_ring_vibrate,
+                afterChange = { refreshNotificationAvailability() },
+            )
+            // Both the active Notification slider and its greyed "unavailable" stand-in are laid out; only
+            // the one matching the current ringer state is visible, and they swap live via the Ring row.
+            val notif = makePillSlider(R.drawable.ic_stream_notification, "Notification", AudioManager.STREAM_NOTIFICATION)
+            val notifDisabled = disabledNotificationRow()
+            notifSlider = notif
+            notifSliderRow = notif
+            notifDisabledRow = notifDisabled
+            rows.addView(notif, pillRowParams())
+            rows.addView(notifDisabled, pillRowParams())
+            refreshNotificationAvailability()
+            addPillRow(rows, R.drawable.ic_stream_alarm, "Alarm", AudioManager.STREAM_ALARM)
+        }
 
         val appsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         rows.addView(appsBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -2832,7 +3164,10 @@ class OverlayController(
         val wanted = apps.map { it.pkg }.toHashSet()
         // Remove rows whose app is no longer playing, so stale controls never linger.
         for (i in container.childCount - 1 downTo 0) {
-            if ((container.getChildAt(i).tag as? String) !in wanted) container.removeViewAt(i)
+            val tag = container.getChildAt(i).tag as? String
+            if (tag != null && tag != EMPTY_STATE_TAG && tag !in wanted) {
+                container.removeViewAt(i)
+            }
         }
         val present = (0 until container.childCount)
             .mapNotNull { container.getChildAt(it).tag as? String }
@@ -2840,6 +3175,17 @@ class OverlayController(
         // Append a row for each newly-playing app; the builder sets its own layout params.
         apps.forEach { app ->
             if (app.pkg !in present) container.addView(builder(app).apply { tag = app.pkg })
+        }
+        if (prefs.isOnlyVolumeMixingEnabled() && expanded && preview == null) {
+            if (apps.isEmpty()) {
+                if (container.findViewWithTag<View>(EMPTY_STATE_TAG) == null) {
+                    container.addView(buildEmptyAppsView().apply { tag = EMPTY_STATE_TAG })
+                }
+            } else {
+                container.findViewWithTag<View>(EMPTY_STATE_TAG)?.let { container.removeView(it) }
+            }
+        } else {
+            container.findViewWithTag<View>(EMPTY_STATE_TAG)?.let { container.removeView(it) }
         }
         // Keep the Android 7–8 selection consistent: a just-added app row must start greyed if some
         // other row is the selected one. No-op on skins without a generic selection.
@@ -2963,6 +3309,9 @@ class OverlayController(
 
     private companion object {
         const val AUTO_HIDE_MS = 4000L
+        const val FLOATING_BTN_SIZE_DP = 56
+        const val FLOATING_AUTO_HIDE_MS = 4000L
+        const val EMPTY_STATE_TAG = "__empty_state__"
         const val AUTO_HIDE_78_MS = 6000L
         const val SLIDE_IN_MS = 220L
         const val SLIDE_OUT_MS = 200L

@@ -64,6 +64,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlin.math.roundToInt
 import com.volume_plus_plus.app.R
 import com.volume_plus_plus.app.config.AppConfig
 import com.volume_plus_plus.app.data.OverlayCustomizationPrefs
@@ -181,6 +182,9 @@ private fun OverlaySetup(
     var version by remember { mutableStateOf(OverlayVersion.current(prefs)) }
     var systemVolumePanel by remember { mutableStateOf(prefs.isSystemVolumePanelEnabled()) }
     var settingsOpensApp by remember { mutableStateOf(prefs.isSettingsOpensAppEnabled()) }
+    var floatingButton by remember { mutableStateOf(prefs.isFloatingButtonEnabled()) }
+    var onlyVolumeMixing by remember { mutableStateOf(prefs.isOnlyVolumeMixingEnabled()) }
+    var popupDuration by remember { mutableStateOf(prefs.getPopupDurationSeconds()) }
     var holdFollowScale by remember { mutableStateOf(prefs.getHoldFollowScale()) }
     var holdSettleScale by remember { mutableStateOf(prefs.getHoldSettleScale()) }
     var holdStepHaptics by remember { mutableStateOf(prefs.isHoldStepHapticsEnabled()) }
@@ -212,6 +216,9 @@ private fun OverlaySetup(
         dndAccessOn = hasDndAccess(context)
         systemVolumePanel = prefs.isSystemVolumePanelEnabled()
         settingsOpensApp = prefs.isSettingsOpensAppEnabled()
+        floatingButton = prefs.isFloatingButtonEnabled()
+        onlyVolumeMixing = prefs.isOnlyVolumeMixingEnabled()
+        popupDuration = prefs.getPopupDurationSeconds()
         holdFollowScale = prefs.getHoldFollowScale()
         holdSettleScale = prefs.getHoldSettleScale()
             holdStepHaptics = prefs.isHoldStepHapticsEnabled()
@@ -302,14 +309,25 @@ private fun OverlaySetup(
         Text(
             text = when {
                 // With the system panel in charge the overlay never opens, so don't claim it's ready.
-                systemVolumePanel -> s.overlaySystemPanelInUse
+                systemVolumePanel && !floatingButton -> s.overlaySystemPanelInUse
+                floatingButton && ready -> s.overlayFloatingButtonReady
                 ready -> s.overlayReady
                 else -> s.overlayIncomplete
             },
             style = MaterialTheme.typography.bodyMedium,
-            color = if (ready && !systemVolumePanel) MaterialTheme.colorScheme.primary
+            color = if (ready && (!systemVolumePanel || floatingButton)) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+        )
+
+        SettingSwitch(
+            title = s.overlayOnlyVolumeMixing,
+            subtitle = s.overlayOnlyVolumeMixingDetail,
+            checked = onlyVolumeMixing,
+            onCheckedChange = {
+                onlyVolumeMixing = it
+                prefs.setOnlyVolumeMixingEnabled(it)
+            },
         )
 
         SettingSwitch(
@@ -326,9 +344,21 @@ private fun OverlaySetup(
             },
         )
 
+        if (systemVolumePanel) {
+            SettingSwitch(
+                title = s.overlayFloatingButton,
+                subtitle = s.overlayFloatingButtonDetail,
+                checked = floatingButton,
+                onCheckedChange = {
+                    floatingButton = it
+                    prefs.setFloatingButtonEnabled(it)
+                },
+            )
+        }
+
         // The style only describes the overlay, so it has nothing to drive while the system panel is
         // in charge: the whole section greys out and stops responding until the switch goes back off.
-        val styleEnabled = !systemVolumePanel
+        val styleEnabled = !systemVolumePanel || floatingButton
         // Where the expanded sheet's SETTINGS / SEE MORE button goes. Kept up here with the other
         // overlay switch rather than under the style list, which is long enough to push it out of
         // sight. Only the Android 9–15 panels draw that button, so with the 7–8 style selected there
@@ -359,6 +389,18 @@ private fun OverlaySetup(
                 it.apply(prefs)
             },
             onEdit = onEdit,
+        )
+        SettingSlider(
+            title = s.overlayPopupDuration,
+            value = popupDuration,
+            valueRange = 1f..10f,
+            steps = 8,
+            valueLabel = { s.seconds(it.roundToInt()) },
+            onValueChange = {
+                val rounded = it.roundToInt().toFloat()
+                popupDuration = rounded
+                prefs.setPopupDurationSeconds(rounded)
+            },
         )
         Text(
             text = s.overlayMotion,
@@ -421,7 +463,10 @@ private fun OverlaySetup(
         )
         Button(
             onClick = {
-                if (canOverlay) previewController.show()
+                if (canOverlay) {
+                    if (systemVolumePanel && floatingButton) previewController.showFloatingButton()
+                    else previewController.show()
+                }
                 else {
                     val intent = Intent(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -455,8 +500,10 @@ private fun SettingSlider(
     steps: Int = 149,
     info: String? = null,
     enabled: Boolean = true,
+    valueLabel: ((Float) -> String)? = null,
     onValueChange: (Float) -> Unit,
 ) {
+    val s = strings()
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -474,7 +521,7 @@ private fun SettingSlider(
                         color = if (enabled) Color.Unspecified else disabledContentColor(),
                     )
                     Text(
-                        text = strings().percent((value * 100).toInt()),
+                        text = valueLabel?.invoke(value) ?: s.percent((value * 100).toInt()),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
                         else disabledContentColor(),

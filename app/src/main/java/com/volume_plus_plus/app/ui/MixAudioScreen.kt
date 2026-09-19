@@ -104,6 +104,8 @@ fun MixAudioScreen(
     var hideSystem by remember { mutableStateOf(true) }
     var warningDismissed by remember { mutableStateOf(prefs.isWarningDismissed()) }
     var systemVolumePanel by remember { mutableStateOf(overlayPrefs.isSystemVolumePanelEnabled()) }
+    var floatingButton by remember { mutableStateOf(overlayPrefs.isFloatingButtonEnabled()) }
+    val isBlocked = systemVolumePanel && !floatingButton
 
     LaunchedEffect(setup.ready) {
         if (setup.ready && apps.isEmpty()) {
@@ -117,8 +119,8 @@ fun MixAudioScreen(
     // mode is exempt too: there is nothing on that route the user can go away and change, so a
     // repeating refresh would only re-ask for superuser access they've already answered.
     val lifecycleOwner = LocalLifecycleOwner.current
-    LaunchedEffect(setup.ready, setup.backend, systemVolumePanel, lifecycleOwner) {
-        if (setup.ready || systemVolumePanel) return@LaunchedEffect
+    LaunchedEffect(setup.ready, setup.backend, isBlocked, lifecycleOwner) {
+        if (setup.ready || isBlocked) return@LaunchedEffect
         if (setup.backend == PrivilegedManager.Backend.ROOT) return@LaunchedEffect
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
@@ -132,6 +134,7 @@ fun MixAudioScreen(
     // resume rather than trusting the value this composition started with.
     LifecycleResumeEffect(Unit) {
         systemVolumePanel = overlayPrefs.isSystemVolumePanelEnabled()
+        floatingButton = overlayPrefs.isFloatingButtonEnabled()
         onPauseOrDispose { }
     }
 
@@ -139,7 +142,7 @@ fun MixAudioScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .alpha(if (systemVolumePanel) DISABLED_ALPHA else 1f),
+                .alpha(if (isBlocked) DISABLED_ALPHA else 1f),
         ) {
             ScreenHeader(title = s.mixingTitle, subtitle = s.mixingSubtitle)
 
@@ -239,7 +242,7 @@ fun MixAudioScreen(
             }
         }
 
-        if (systemVolumePanel) {
+        if (isBlocked) {
             SystemPanelBlocker(onOpenOverlaySettings = onOpenOverlaySettings)
         }
     }

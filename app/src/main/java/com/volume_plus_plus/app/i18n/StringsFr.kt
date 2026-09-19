@@ -26,6 +26,7 @@ object FrenchStrings : Strings() {
     override val grant get() = "Autoriser"
     override val openSettings get() = "Ouvrir les paramètres"
     override val off get() = "Désactivé"
+    override fun seconds(s: Int) = if (s == 1) "1 seconde" else "$s secondes"
 
     // ── thème ───────────────────────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ object FrenchStrings : Strings() {
 
     override val volumeTitle get() = "Volume"
     override val volumeSubtitle get() = "Réglez chaque canal audio"
+    override val volumeAppVolumes get() = "Volume par application"
 
     override val streamMedia get() = "Multimédia"
     override val streamCall get() = "Appel"
@@ -155,6 +157,17 @@ object FrenchStrings : Strings() {
     override val overlayIncomplete get() =
         "Effectuez les trois étapes ci-dessus pour activer le panneau."
 
+    override val overlayFloatingButton get() = "Bouton flottant"
+    override val overlayFloatingButtonDetail get() =
+        "Afficher un bouton flottant lors de l'appui sur les touches de volume pour ouvrir le panneau complet, au lieu de remplacer le panneau du système."
+    override val overlayFloatingButtonReady get() =
+        "Prêt — appuyez sur une touche de volume pour afficher le bouton flottant."
+
+    override val overlayOnlyVolumeMixing get() = "Seulement le mixage du volume en mode étendu"
+    override val overlayOnlyVolumeMixingDetail get() =
+        "Afficher uniquement les curseurs de volume par application dans le panneau étendu, en masquant ceux du système."
+    override val overlayNoActiveApps get() = "Aucune application ne lit d'audio actuellement"
+
     override val overlayUseSystemPanel get() = "Utiliser le réglage du volume du système"
     override val overlayUseSystemPanelDetail get() =
         "Laissez les touches de volume au panneau intégré d'Android plutôt qu'à celui de Volume++."
@@ -168,6 +181,7 @@ object FrenchStrings : Strings() {
             "paramètres de son d'Android."
 
     override val overlayMotion get() = "Mouvement"
+    override val overlayPopupDuration get() = "Durée d'affichage"
     override val overlayMotionInfo get() =
         "Le mouvement r\u00e8gle la fa\u00e7on dont le curseur bouge ; le retour haptique r\u00e8gle la " +
             "vibration que vous sentez en l'utilisant. Laissez les deux vitesses \u00e0 100 % pour " +
