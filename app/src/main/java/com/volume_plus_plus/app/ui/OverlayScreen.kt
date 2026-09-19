@@ -384,12 +384,6 @@ private fun OverlaySetup(
             },
             onEdit = onEdit,
         )
-        Text(
-            text = s.overlayMotion,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp),
-        )
-        InfoCard(s.overlayMotionInfo)
         SettingSlider(
             title = s.overlayPopupDuration,
             value = popupDuration,
@@ -402,6 +396,12 @@ private fun OverlaySetup(
                 prefs.setPopupDurationSeconds(rounded)
             },
         )
+        Text(
+            text = s.overlayMotion,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp),
+        )
+        InfoCard(s.overlayMotionInfo)
         SettingSlider(
             title = s.overlayHoldFollowSpeed,
             info = s.overlayHoldFollowSpeedInfo,
