@@ -6,6 +6,7 @@ import com.volume_plus_plus.app.overlay.LegacyVersion
 import com.volume_plus_plus.app.overlay.OverlaySkin
 import com.volume_plus_plus.app.overlay.SevenEightVersion
 import com.volume_plus_plus.app.overlay.defaultSkin
+import kotlin.math.roundToLong
 
 /**
  * Remembers the user's chosen overlay skin. Defaults to the best match for the device's Android
@@ -80,6 +81,49 @@ class OverlayPrefs(context: Context) {
         prefs.edit().putBoolean(KEY_SETTINGS_OPENS_APP, enabled).apply()
     }
 
+    /**
+     * Whether pressing the volume keys should show a temporary floating button that opens the
+     * expanded volume sheet, rather than replacing the system volume panel outright.
+     */
+    fun isFloatingButtonEnabled(): Boolean = prefs.getBoolean(KEY_FLOATING_BUTTON, false)
+
+    fun setFloatingButtonEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_FLOATING_BUTTON, enabled).apply()
+    }
+
+    /**
+     * Whether only per-app volume mixing sliders should appear when the volume panel is expanded,
+     * hiding the standard system audio stream sliders.
+     */
+    fun isOnlyVolumeMixingEnabled(): Boolean = prefs.getBoolean(KEY_ONLY_VOLUME_MIXING, false)
+
+    fun setOnlyVolumeMixingEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ONLY_VOLUME_MIXING, enabled).apply()
+    }
+
+    /** Popup display duration in seconds (1.0..10.0, default 4.0). */
+    fun getPopupDurationSeconds(): Float = prefs.getFloat(KEY_POPUP_DURATION, DEFAULT_POPUP_DURATION_SECONDS)
+
+    fun setPopupDurationSeconds(seconds: Float) {
+        prefs.edit().putFloat(KEY_POPUP_DURATION, seconds.coerceIn(1f, 10f)).apply()
+    }
+
+    fun getPopupDurationMs(): Long = (getPopupDurationSeconds() * 1000f).roundToLong()
+
+    /** Last saved X position of the floating button in px (-1 for default docked position). */
+    fun getFloatingButtonX(): Int = prefs.getInt(KEY_FLOATING_X, -1)
+
+    fun setFloatingButtonX(x: Int) {
+        prefs.edit().putInt(KEY_FLOATING_X, x).apply()
+    }
+
+    /** Last saved Y position of the floating button in px (-1 for default docked position). */
+    fun getFloatingButtonY(): Int = prefs.getInt(KEY_FLOATING_Y, -1)
+
+    fun setFloatingButtonY(y: Int) {
+        prefs.edit().putInt(KEY_FLOATING_Y, y).apply()
+    }
+
     /** Multiplier for the slider's follow speed while a held key is still stepping. */
     fun getHoldFollowScale(): Float = prefs.getFloat(KEY_HOLD_FOLLOW_SCALE, 1f)
 
@@ -115,6 +159,12 @@ class OverlayPrefs(context: Context) {
         const val KEY_SEVEN_EIGHT_VERSION = "seven_eight_version"
         const val KEY_SYSTEM_VOLUME_PANEL = "system_volume_panel"
         const val KEY_SETTINGS_OPENS_APP = "settings_opens_app"
+        const val KEY_FLOATING_BUTTON = "floating_button"
+        const val KEY_ONLY_VOLUME_MIXING = "only_volume_mixing"
+        const val KEY_POPUP_DURATION = "popup_duration"
+        const val DEFAULT_POPUP_DURATION_SECONDS = 4.0f
+        const val KEY_FLOATING_X = "floating_x"
+        const val KEY_FLOATING_Y = "floating_y"
         const val KEY_HOLD_FOLLOW_SCALE = "hold_follow_scale"
         const val KEY_HOLD_SETTLE_SCALE = "hold_settle_scale"
         const val KEY_HOLD_STEP_HAPTICS = "hold_step_haptics"

@@ -55,7 +55,7 @@ class VolumeKeyService : AccessibilityService() {
         // poll loop): tear them down before rebuilding.
         overlay?.destroy()
         appVolume?.destroy()
-        val volume = AppVolumeController(this).also { it.start() }
+        val volume = AppVolumeController.get(this)
         appVolume = volume
         overlay = OverlayController(this, volume)
     }
@@ -64,6 +64,21 @@ class VolumeKeyService : AccessibilityService() {
         val isVolumeKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
         if (!isVolumeKey) return super.onKeyEvent(event)
+
+        // If floating button mode is enabled, pressing volume keys leaves the volume handling to
+        // Android's built-in panel and displays a temporary floating button to open the full sheet.
+        if (prefs.isFloatingButtonEnabled()) {
+            heldDirection = 0
+            handler.removeCallbacks(repeat)
+            if (Settings.canDrawOverlays(this) && event.action == KeyEvent.ACTION_DOWN) {
+                if (overlay?.isExpandedShowing() == true) {
+                    overlay?.onExternalVolumeKey()
+                } else {
+                    overlay?.showFloatingButton()
+                }
+            }
+            return super.onKeyEvent(event)
+        }
 
         // The user asked for Android's built-in volume control, so don't consume the keys — the
         // system panel handles them exactly as it would without this app. Read live (the setting can

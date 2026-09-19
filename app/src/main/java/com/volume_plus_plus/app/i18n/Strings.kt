@@ -43,6 +43,7 @@ open class Strings {
 
     /** A percentage as shown next to a slider, e.g. `40%`. */
     open fun percent(value: Int) = "$value%"
+    open fun seconds(s: Int) = if (s == 1) "1 second" else "$s seconds"
 
     // ── theme picker ────────────────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ open class Strings {
 
     open val volumeTitle get() = "Volume"
     open val volumeSubtitle get() = "Control each sound channel"
+    open val volumeAppVolumes get() = "App volume"
 
     open val streamMedia get() = "Media"
     open val streamCall get() = "Call"
@@ -191,6 +193,17 @@ open class Strings {
     open val overlayReady get() = "Ready — press a volume key to try it."
     open val overlayIncomplete get() = "Complete all three steps above to activate the overlay."
 
+    open val overlayFloatingButton get() = "Floating button"
+    open val overlayFloatingButtonDetail get() =
+        "Show a floating button when pressing volume keys to open the full panel, instead of replacing the system volume panel."
+    open val overlayFloatingButtonReady get() =
+        "Ready — press a volume key to show the floating button."
+
+    open val overlayOnlyVolumeMixing get() = "Only volume mixing when expanded"
+    open val overlayOnlyVolumeMixingDetail get() =
+        "Show only per-app volume sliders in the expanded panel, hiding system streams."
+    open val overlayNoActiveApps get() = "No apps currently playing audio"
+
     open val overlayUseSystemPanel get() = "Use system volume control"
     open val overlayUseSystemPanelDetail get() =
         "Leave the volume keys to Android's built-in panel instead of the overlay."
@@ -205,6 +218,7 @@ open class Strings {
             "settings."
 
     open val overlayMotion get() = "Motion"
+    open val overlayPopupDuration get() = "Popup duration"
     open val overlayMotionInfo get() =
         "Motion controls how the slider moves; haptics control the buzz you feel while you use it. " +
             "Leave both speeds at 100% to keep the default feel, or nudge them if you want the " +

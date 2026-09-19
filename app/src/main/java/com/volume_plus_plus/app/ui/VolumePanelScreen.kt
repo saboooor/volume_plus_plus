@@ -43,6 +43,14 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.core.graphics.drawable.toBitmap
+import com.volume_plus_plus.app.overlay.ActiveAppPlayer
+import com.volume_plus_plus.app.overlay.AppVolumeController
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import com.volume_plus_plus.app.R
 import com.volume_plus_plus.app.i18n.Strings
 import com.volume_plus_plus.app.i18n.strings
@@ -88,9 +96,25 @@ fun VolumePanelScreen(contentPadding: PaddingValues, snackbar: SnackbarHostState
     val context = LocalContext.current
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val scope = rememberCoroutineScope()
-
     // Bumped by the volume-changed receiver to force each slider to re-read the system value.
     var refreshKey by remember { mutableIntStateOf(0) }
+
+    val appVolume = remember { AppVolumeController.get(context) }
+    var activeApps by remember { mutableStateOf<List<ActiveAppPlayer>>(emptyList()) }
+
+    LaunchedEffect(refreshKey) {
+        activeApps = appVolume.queryPlayingApps()
+    }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val queried = appVolume.queryPlayingApps()
+            if (queried != activeApps) {
+                activeApps = queried
+            }
+            delay(1500L)
+        }
+    }
 
     // Ring at zero means the ringer is on vibrate/silent — notifications can't make sound then,
     // so the Notification row is disabled while this is true.
@@ -140,6 +164,31 @@ fun VolumePanelScreen(contentPadding: PaddingValues, snackbar: SnackbarHostState
                 )
             }
         }
+
+        if (activeApps.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = s.volumeAppVolumes,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+            ) {
+                activeApps.forEach { app ->
+                    AppVolumeRow(
+                        app = app,
+                        appVolume = appVolume,
+                        refreshKey = refreshKey,
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -245,6 +294,78 @@ private fun showNotificationPolicyPrompt(
             val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             runCatching { context.startActivity(intent) }
+        }
+    }
+}
+
+
+@Composable
+private fun AppVolumeRow(
+    app: ActiveAppPlayer,
+    appVolume: AppVolumeController,
+    refreshKey: Int,
+) {
+    var value by remember(app.packageName) {
+        mutableFloatStateOf(appVolume.volumeFor(app.packageName))
+    }
+
+    LaunchedEffect(refreshKey) {
+        value = appVolume.volumeFor(app.packageName)
+    }
+
+    val s = strings()
+    val percent = (value * 100f).roundToInt().coerceIn(0, 100)
+    val bitmap = remember(app.packageName, app.icon) {
+        runCatching { app.icon?.toBitmap()?.asImageBitmap() }.getOrNull()
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = app.label,
+                modifier = Modifier.size(22.dp),
+            )
+        } else {
+            Icon(
+                painter = painterResource(R.drawable.ic_stream_media),
+                contentDescription = app.label,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = app.label,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = s.percent(percent),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(44.dp),
+                )
+            }
+            VolumeSlider(
+                value = value,
+                onValueChange = { new ->
+                    value = new
+                    appVolume.setVolume(app.packageName, new, app.piids)
+                },
+                valueRange = 0f..1f,
+                steps = 99,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
