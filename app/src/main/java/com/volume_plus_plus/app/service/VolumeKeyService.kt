@@ -65,27 +65,20 @@ class VolumeKeyService : AccessibilityService() {
             event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
         if (!isVolumeKey) return super.onKeyEvent(event)
 
-        // If floating button mode is enabled, pressing volume keys leaves the volume handling to
-        // Android's built-in panel and displays a temporary floating button to open the full sheet.
-        if (prefs.isFloatingButtonEnabled()) {
+        // The user asked for Android's built-in volume control, so don't consume the keys — the
+        // system panel handles them exactly as it would without this app. Read live (the setting can
+        // be flipped while the service stays connected); a held repeat is dropped below with the key.
+        // If floating button mode is also enabled, display a temporary floating button to open the full sheet.
+        if (prefs.isSystemVolumePanelEnabled()) {
             heldDirection = 0
             handler.removeCallbacks(repeat)
-            if (Settings.canDrawOverlays(this) && event.action == KeyEvent.ACTION_DOWN) {
+            if (prefs.isFloatingButtonEnabled() && Settings.canDrawOverlays(this) && event.action == KeyEvent.ACTION_DOWN) {
                 if (overlay?.isExpandedShowing() == true) {
                     overlay?.onExternalVolumeKey()
                 } else {
                     overlay?.showFloatingButton()
                 }
             }
-            return super.onKeyEvent(event)
-        }
-
-        // The user asked for Android's built-in volume control, so don't consume the keys — the
-        // system panel handles them exactly as it would without this app. Read live (the setting can
-        // be flipped while the service stays connected); a held repeat is dropped below with the key.
-        if (prefs.isSystemVolumePanelEnabled()) {
-            heldDirection = 0
-            handler.removeCallbacks(repeat)
             return super.onKeyEvent(event)
         }
 

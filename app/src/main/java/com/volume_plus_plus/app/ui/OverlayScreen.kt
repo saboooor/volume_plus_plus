@@ -317,16 +317,6 @@ private fun OverlaySetup(
         )
 
         SettingSwitch(
-            title = s.overlayFloatingButton,
-            subtitle = s.overlayFloatingButtonDetail,
-            checked = floatingButton,
-            onCheckedChange = {
-                floatingButton = it
-                prefs.setFloatingButtonEnabled(it)
-            },
-        )
-
-        SettingSwitch(
             title = s.overlayOnlyVolumeMixing,
             subtitle = s.overlayOnlyVolumeMixingDetail,
             checked = onlyVolumeMixing,
@@ -349,6 +339,18 @@ private fun OverlaySetup(
                 switchCenter = it.positionInRoot().y + it.size.height / 2f
             },
         )
+
+        if (systemVolumePanel) {
+            SettingSwitch(
+                title = s.overlayFloatingButton,
+                subtitle = s.overlayFloatingButtonDetail,
+                checked = floatingButton,
+                onCheckedChange = {
+                    floatingButton = it
+                    prefs.setFloatingButtonEnabled(it)
+                },
+            )
+        }
 
         // The style only describes the overlay, so it has nothing to drive while the system panel is
         // in charge: the whole section greys out and stops responding until the switch goes back off.
@@ -458,7 +460,7 @@ private fun OverlaySetup(
         Button(
             onClick = {
                 if (canOverlay) {
-                    if (floatingButton) previewController.showFloatingButton()
+                    if (systemVolumePanel && floatingButton) previewController.showFloatingButton()
                     else previewController.show()
                 }
                 else {
