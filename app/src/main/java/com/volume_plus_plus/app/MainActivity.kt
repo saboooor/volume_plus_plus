@@ -20,7 +20,9 @@ import com.volume_plus_plus.app.config.AppSettings
 import com.volume_plus_plus.app.data.MixPrefs
 import com.volume_plus_plus.app.i18n.LocalStrings
 import com.volume_plus_plus.app.i18n.rememberStrings
+import com.volume_plus_plus.app.overlay.MediaBooster
 import com.volume_plus_plus.app.overlay.ScreenColorPicker
+import com.volume_plus_plus.app.permissions.Permissions
 import com.volume_plus_plus.app.privileged.PrivilegedManager
 import com.volume_plus_plus.app.ui.MainScreen
 import com.volume_plus_plus.app.ui.theme.ThemeMode
@@ -53,6 +55,9 @@ class MainActivity : ComponentActivity(), ScreenColorPicker.Host {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PrivilegedManager.init(this)
+        // So the Overlay tab's booster switch knows whether this device can boost before the user
+        // reaches it. Idempotent, and the probe it runs is off the main thread.
+        MediaBooster.init(this)
         setContent {
             // Both settings live in AppSettings rather than in composition state: the overlay and the
             // accessibility service read the same values, and they have no route back into the UI.
@@ -114,6 +119,9 @@ class MainActivity : ComponentActivity(), ScreenColorPicker.Host {
         super.onResume()
         // The user may have started Shizuku or granted access while we were backgrounded.
         PrivilegedManager.refresh()
+        // The grants are watched continuously, so this is only about being certain: a device that
+        // silently drops a listener must still find the truth the moment the app comes forward.
+        Permissions.refresh()
     }
 
     override fun onDestroy() {

@@ -51,6 +51,12 @@ class VolumeSlider(
     private val orientation: SliderOrientation = style.orientation,
     private val fill: Boolean = style.stretch,
     private val reserveTrailing: Boolean = false,
+    /**
+     * [PILL_LABEL] only: whether to draw the trailing dot. Every sheet row has one; the media-output
+     * picker's "This phone" pill has one on Android 16 but not on 15, which draws it bare — both
+     * checked against their own stock panels.
+     */
+    private val showDot: Boolean = true,
     private val render: SliderRender = style.render,
     /**
      * [CAPSULE] only: draw the track as a full-width rounded pill (the whole slider footprint) instead
@@ -241,6 +247,22 @@ class VolumeSlider(
     // would shadow our `style` constructor param.
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).also { it.color = pickerTrackColor ?: style.trackColor }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).also { it.color = pickerFillColor ?: style.fillColor }
+
+    /**
+     * The fill colour, swappable after construction. Starts at [pickerFillColor] (else the style's
+     * own fill) and is set live by every call panel — Android 14, 15 and the 9–11 trio — where the
+     * column the finger last touched takes the accent and the other drops to the quieter inactive
+     * tone: a repaint of two sliders, rather than a rebuild of the panel under the finger.
+     */
+    var fillOverride: Int? = pickerFillColor
+        set(value) {
+            field = value
+            fillPaint.color = value ?: style.fillColor
+            // A LINE_THUMB slider's round handle is the fill's own grip, and the two always share a
+            // colour (applyColors ties them together as well), so an override has to move both.
+            thumbPaint.color = value ?: style.thumbColor
+            invalidate()
+        }
     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).also { it.color = style.thumbColor }
     private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).also { it.color = style.pressedHaloColor }
     private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).also {
@@ -333,7 +355,7 @@ class VolumeSlider(
         // Android 15 dark sheet does), and failing that the content falls back to the historic
         // automatic on-fill colour (black/white by the fill's luminance) so it stays legible and
         // doesn't track any editable colour, and to the editable text colour over the track.
-        val onFill = pickerContentColor ?: style.pillContentOnFill ?: contrastOn(pickerFillColor ?: style.fillColor)
+        val onFill = pickerContentColor ?: style.pillContentOnFill ?: contrastOn(fillOverride ?: style.fillColor)
         val onTrack = pickerContentColor ?: style.pillContentOnTrack ?: style.textColor
         val iconSize = dp(ICON_DP)
 
@@ -365,9 +387,15 @@ class VolumeSlider(
         // Trailing dot near the end (Android 15's per-row affordance). An explicit dotColor override
         // pins it to that exact colour on both fill and track; otherwise it follows the on-backing
         // content colour (legible over whichever side it sits on), as before.
+        //
+        // [showDot] is what turns it off: the Android 15 picker draws "This phone" as a bare filled
+        // pill, while 16's keeps the dot. The position is computed either way, since the label is
+        // ellipsised against it and keeping that inset holds the text off the pill's rounded end.
         val dotCx = w - dp(16f)
-        pillLabelPaint.color = style.dotColor ?: if (fillRight >= dotCx) onFill else onTrack
-        canvas.drawCircle(dotCx, cy, dp(2f), pillLabelPaint)
+        if (showDot) {
+            pillLabelPaint.color = style.dotColor ?: if (fillRight >= dotCx) onFill else onTrack
+            canvas.drawCircle(dotCx, cy, dp(2f), pillLabelPaint)
+        }
 
         if (percentWhileDragging) {
             drawPickerContent(canvas, cy, iconSize, fillRight, dotCx, onFill, onTrack)
@@ -549,7 +577,7 @@ class VolumeSlider(
         // fill and thumb to the inactive grey — the track, icon and label keep their normal colours,
         // matching the real Android 7–8 rows.
         val inactive = !sliderEnabled || dimmed
-        fillPaint.color = if (inactive) style.inactiveColor else (pickerFillColor ?: style.fillColor)
+        fillPaint.color = if (inactive) style.inactiveColor else (fillOverride ?: style.fillColor)
         thumbPaint.color = if (inactive) style.inactiveColor else style.thumbColor
         val h = height.toFloat()
         // Label sits at the top; the icon + track + thumb live in the zone below it.

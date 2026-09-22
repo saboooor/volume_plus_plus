@@ -2,6 +2,8 @@ package com.volume_plus_plus.app.service
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.audiofx.LoudnessEnhancer
+import android.os.Build
 import com.volume_plus_plus.app.IUserService
 import java.io.BufferedReader
 import java.io.File
@@ -26,7 +28,13 @@ class UserService() : IUserService.Stub() {
         this.context = context
     }
 
+    /** The live loudness boost, if one is applied. Held open only while the gain is non-zero. */
+    private var enhancer: LoudnessEnhancer? = null
+
     override fun destroy() {
+        // Drop the boost before going away. The gain lives in the audio server, not in this
+        // process, so leaving it applied would outlast us with no UI left to undo it.
+        releaseEnhancer()
         exitProcess(0)
     }
 
@@ -160,6 +168,55 @@ class UserService() : IUserService.Stub() {
     }
 
     /** Reflectively call a no-arg int getter (a hidden method) on [this]. */
+    /**
+     * Global media loudness boost. A gain of 0 releases the effect, which is also how the app probes
+     * whether boosting is possible on this device at all — see the AIDL doc for why it can fail even
+     * from here.
+     */
+    override fun setLoudnessGain(gainMillibels: Int): String {
+        val gain = gainMillibels.coerceIn(0, MAX_GAIN_MB)
+        if (gain == 0) {
+            releaseEnhancer()
+            return ""
+        }
+        return try {
+            val fx = enhancer ?: createEnhancer() ?: return "ERROR: no LoudnessEnhancer"
+            enhancer = fx
+            fx.setTargetGain(gain)
+            if (!fx.enabled) fx.enabled = true
+            ""
+        } catch (e: Throwable) {
+            releaseEnhancer()
+            "ERROR: ${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
+
+    /**
+     * The global output mix (session 0) first — that is the only attachment that boosts whatever
+     * happens to be playing. If the platform refuses even from here, fall back to the session of a
+     * player that is currently running: some builds allow a per-session effect where they refuse a
+     * global one. Narrower, since it dies with that player, but better than nothing.
+     */
+    private fun createEnhancer(): LoudnessEnhancer? =
+        runCatching { LoudnessEnhancer(0).also { it.enabled = true } }.getOrNull()
+            ?: runCatching {
+                // Per-session playback enumeration is Android 8+; below that the global mix is the
+                // only route there is, and it either worked above or the device can't boost.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+                val am = context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                    ?: return null
+                val session = am.activePlaybackConfigurations
+                    .firstNotNullOfOrNull { cfg ->
+                        cfg.invokeInt("getSessionId")?.takeIf { it != 0 }
+                    } ?: return null
+                LoudnessEnhancer(session).also { it.enabled = true }
+            }.getOrNull()
+
+    private fun releaseEnhancer() {
+        runCatching { enhancer?.release() }
+        enhancer = null
+    }
+
     private fun Any.invokeInt(method: String): Int? =
         try {
             javaClass.getMethod(method).invoke(this) as? Int
@@ -180,12 +237,22 @@ class UserService() : IUserService.Stub() {
         /** AudioPlaybackConfiguration.PLAYER_STATE_STARTED — the player is actively running. */
         const val PLAYER_STATE_STARTED = 2
 
+        /** Ceiling on the loudness boost (mB). +6 dB is the app's maximum; this is the hard stop
+         *  in the privileged process, so a bad caller can't drive the output arbitrarily loud. */
+        const val MAX_GAIN_MB = 600
+
         /**
-         * AudioAttributes usages that represent media the user is actually listening to
-         * (USAGE_UNKNOWN, USAGE_MEDIA, USAGE_GAME, USAGE_ASSISTANT). Everything else — notifications,
-         * alarms, ringtones, assistance sonification — is excluded from the per-app list.
+         * AudioAttributes usages that represent audio the user is actually listening to
+         * (USAGE_UNKNOWN, USAGE_MEDIA, USAGE_VOICE_COMMUNICATION, USAGE_GAME, USAGE_ASSISTANT).
+         * Everything else — notifications, alarms, ringtones, assistance sonification — is excluded
+         * from the per-app list.
+         *
+         * VOICE_COMMUNICATION (2) is what a call app plays the other party through: Discord, an
+         * in-game voice chat, a messenger's voice/video call. Those are as much "something the user
+         * is listening to" as music is, and they are the whole point of the per-app call support, so
+         * they belong in the list even though the stream behind them is the call one, not media.
          */
-        val AUDIBLE_USAGES = setOf(0, 1, 14, 16)
+        val AUDIBLE_USAGES = setOf(0, 1, 2, 14, 16)
     }
 
     private fun runCommand(cmd: Array<String>): String {

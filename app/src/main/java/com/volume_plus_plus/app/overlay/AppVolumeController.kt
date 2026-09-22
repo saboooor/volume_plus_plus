@@ -8,6 +8,8 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import com.volume_plus_plus.app.data.AppVolumePrefs
+import com.volume_plus_plus.app.data.OverlayPrefs
 import com.volume_plus_plus.app.privileged.PrivilegedManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +80,16 @@ data class ActiveAppPlayer(
 class AppVolumeController(context: Context) {
 
     private val appContext = context.applicationContext
+    private val store = AppVolumePrefs(appContext)
+    private val prefs = OverlayPrefs(appContext)
+
+    /**
+     * The remembered level for [pkg], or full when nothing is stored — which is also what this
+     * returns whenever the user has switched remembering off, so the feature disabled behaves
+     * exactly as the app did before it existed. Read live so the switch takes effect immediately.
+     */
+    private fun stored(pkg: String): Float =
+        if (prefs.isRememberAppVolumesEnabled()) store.get(pkg) else DEFAULT_VOLUME
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -144,7 +156,7 @@ class AppVolumeController(context: Context) {
      * always starts at maximum. Used to initialise a per-app slider so it reflects the level the
      * user set earlier this session instead of snapping back to full every time the panel opens.
      */
-    fun volumeFor(pkg: String): Float = sessions[pkg]?.volume ?: DEFAULT_VOLUME
+    fun volumeFor(pkg: String): Float = sessions[pkg]?.volume ?: stored(pkg)
 
     suspend fun queryPlayingApps(): List<ActiveAppPlayer> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return emptyList()
@@ -181,6 +193,9 @@ class AppVolumeController(context: Context) {
      * loop keep it applied to any players that appear later this session.
      */
     fun setVolume(pkg: String, level: Float, piids: List<Int>) {
+        // Remembered across sessions and reboots, so the next time this app plays it starts where
+        // the user left it rather than at full. Writing full deletes the entry — see [AppVolumePrefs].
+        if (prefs.isRememberAppVolumesEnabled()) store.set(pkg, level)
         val session = sessions.getOrPut(pkg) { Session(level) }
         session.volume = level
         // A changed target must be re-pushed to every current player, so forget prior applications.
@@ -248,8 +263,13 @@ class AppVolumeController(context: Context) {
     /** Currently-playing packages mapped to their player instance ids (empty when nothing audible). */
     private suspend fun queryPlayers(): Map<String, List<Int>> {
         // isMusicActive() reflects real output, so a "started" player an idle app keeps registered
-        // (e.g. some social apps) doesn't count as playback the user is listening to.
-        if (!audioManager.isMusicActive || !PrivilegedManager.isReady) return emptyMap()
+        // (e.g. some social apps) doesn't count as playback the user is listening to. A call is the
+        // other way an app is audibly playing — its voice audio runs on the call stream, which
+        // isMusicActive() says nothing about — so a call in progress opens the same gate, and an
+        // app's remembered volume is re-applied to its call audio just as it is to its media.
+        if ((!audioManager.isMusicActive && !audioManager.inCall()) || !PrivilegedManager.isReady) {
+            return emptyMap()
+        }
         return PrivilegedManager.getActivePlayers()
             .filter { it.packageName != appContext.packageName }
             .groupBy { it.packageName }
@@ -263,7 +283,11 @@ class AppVolumeController(context: Context) {
      */
     private suspend fun reconcile(playing: Map<String, List<Int>>) {
         for ((pkg, piids) in playing) {
-            val session = sessions.getOrPut(pkg) { Session(DEFAULT_VOLUME) }
+            // A session that starts here begins at whatever the user last chose for this app, which
+            // is full unless something was remembered. The store is only ever read at this moment,
+            // never pre-loaded into [sessions] — the poll loop idles on `sessions` going empty, so
+            // seeding it from disk would keep it awake for ever.
+            val session = sessions.getOrPut(pkg) { Session(stored(pkg)) }
             // Forget piids that are no longer present so `applied` can't grow without bound.
             session.applied.keys.retainAll(piids.toHashSet())
             // Only a custom (below-full) level needs enforcing; a full session leaves the OS default

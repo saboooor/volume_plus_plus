@@ -246,6 +246,11 @@ const val A15_SHEET_TRACK_LIGHT = 0xFFDDE2F9.toInt()
 const val A15_SHEET_ON_FILL_LIGHT = 0xFFFFFFFF.toInt()
 const val A15_SHEET_ON_TRACK_LIGHT = 0xFF414659.toInt()
 const val A15_SHEET_OUTPUT_SURFACE_LIGHT = 0xFFFAF8FF.toInt()
+
+/** Android 16's "Calling on" card, which is grey where 15 leaves the sheet's white output card.
+ *  Sampled from a stock Android 16 panel mid-call, in each theme. */
+const val A16_CALL_CARD_LIGHT = 0xFFE3E2E9.toInt()
+const val A16_CALL_CARD_DARK = 0xFF33343A.toInt()
 const val A15_SHEET_CAPTION_LIGHT = 0xFF45464F.toInt()
 const val A15_SHEET_LABEL_LIGHT = 0xFF1A1B21.toInt()
 const val A15_SHEET_BG_LIGHT = 0xFFEEEDF4.toInt()
@@ -281,6 +286,15 @@ fun OverlayStyle.withAndroid15SheetDark(): OverlayStyle = copy(
  * to seed the light swatches (see [OverlayStyle.defaultColor]). Unlike the dark sheet, the trailing
  * "·" dot is pinned to the fill colour ([dotColor]) rather than following the pill content.
  */
+/**
+ * Android 16's call sheet: the Android 15 sheet with its output card greyed. Layered after
+ * [withAndroid15SheetLight]/[withAndroid15SheetDark] and before the user's own colours, so an
+ * untouched sheet shows the reference grey while a pinned "Output card" swatch still wins.
+ */
+fun OverlayStyle.withAndroid16CallCard(dark: Boolean): OverlayStyle = copy(
+    outputSurfaceColor = if (dark) A16_CALL_CARD_DARK else A16_CALL_CARD_LIGHT,
+)
+
 fun OverlayStyle.withAndroid15SheetLight(): OverlayStyle = copy(
     containerColor = A15_SHEET_BG_LIGHT,
     fillColor = A15_SHEET_FILL_LIGHT,
@@ -467,7 +481,7 @@ fun visibleColors(version: OverlayVersion, component: PanelComponent): List<Edit
                 core + EditableColor.ACCENT + EditableColor.MEDIA_ICON + EditableColor.MODE_ICON +
                     EditableColor.OVERFLOW
             PanelComponent.EXPANDED ->
-                if (version.iconSet == IconSet.ANDROID_15)
+                if (version.iconSet?.usesOutputSheet == true)
                     // The redesigned Android 15 sheet: the "Audio will play on" output card, the
                     // trailing volume dot, and the split DONE pill (fill + text) — no generic
                     // secondary surface (its only secondary surface is the output card), and no title
@@ -501,6 +515,9 @@ fun visibleColors(version: OverlayVersion, component: PanelComponent): List<Edit
 /** Layer [colors] onto this style, keeping each element's default where no override is set. */
 fun OverlayStyle.applyColors(colors: PanelColors): OverlayStyle = copy(
     trackColor = colors.track ?: trackColor,
+    // The stick follows a user's own track colour when they set one, so recolouring "track" still
+    // reaches the main panel; left alone it keeps the skin's own stick colour.
+    capsuleStickColor = colors.track ?: capsuleStickColor,
     fillColor = colors.fill ?: fillColor,
     // The fill override drives the thumb too, so slider fill and its handle recolour together.
     thumbColor = colors.fill ?: thumbColor,

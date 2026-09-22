@@ -217,6 +217,22 @@ private fun StreamRow(
     val label = stream.label(s)
     val range = (max - min).coerceAtLeast(1)
     val percent = (((value - min) / range) * 100f).roundToInt().coerceIn(0, 100)
+    val index = value.roundToInt().coerceIn(min, max)
+
+    // The slider and the − / + buttons both write through here, so a level set either way is
+    // clamped, reflected and refused (under Do Not Disturb) identically. It reads `value` rather
+    // than a level captured during composition, so the repeat a held button drives keeps stepping
+    // from where the last one left it.
+    fun setLevel(target: Int) {
+        val clamped = target.coerceIn(min, max)
+        value = clamped.toFloat()
+        try {
+            audio.setStreamVolume(stream.type, clamped, 0)
+        } catch (e: SecurityException) {
+            // Ring/Notification under Do Not Disturb needs notification-policy access.
+            onDenied()
+        }
+    }
 
     // Streams with a distinct muted state swap their icon at zero; a disabled Notification row
     // shows the crossed bell.
@@ -250,31 +266,39 @@ private fun StreamRow(
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = if (enabled) s.percent(percent) else s.off,
+                    // How many steps a channel has is set by the device and can't be widened by an
+                    // app, so the percentage alone makes the slider look broken when it skips from
+                    // 73% to 80%. Showing the step position next to it says why.
+                    text = if (enabled) s.volumeLevel(percent, index, max) else s.off,
                     style = MaterialTheme.typography.labelLarge,
                     color = contentTint,
                     textAlign = TextAlign.End,
                     // Fixed width so the row doesn't jitter as digits change while dragging.
-                    modifier = Modifier.width(44.dp),
+                    modifier = Modifier.width(92.dp),
                 )
             }
-            VolumeSlider(
-                value = value,
-                onValueChange = { new ->
-                    value = new
-                    val target = new.roundToInt().coerceIn(min, max)
-                    try {
-                        audio.setStreamVolume(stream.type, target, 0)
-                    } catch (e: SecurityException) {
-                        // Ring/Notification under Do Not Disturb needs notification-policy access.
-                        onDenied()
-                    }
-                },
-                valueRange = min.toFloat()..max.toFloat(),
-                steps = (max - min - 1).coerceAtLeast(0),
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StepButton(
+                    icon = R.drawable.ic_remove,
+                    description = s.volumeStepDown(label),
+                    enabled = enabled && index > min,
+                    onStep = { setLevel(value.roundToInt() - 1) },
+                )
+                VolumeSlider(
+                    value = value,
+                    onValueChange = { setLevel(it.roundToInt()) },
+                    valueRange = min.toFloat()..max.toFloat(),
+                    steps = (max - min - 1).coerceAtLeast(0),
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                )
+                StepButton(
+                    icon = R.drawable.ic_add,
+                    description = s.volumeStepUp(label),
+                    enabled = enabled && index < max,
+                    onStep = { setLevel(value.roundToInt() + 1) },
+                )
+            }
         }
     }
 }

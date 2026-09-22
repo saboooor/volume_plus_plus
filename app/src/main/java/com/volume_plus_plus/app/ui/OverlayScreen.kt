@@ -1,12 +1,14 @@
 package com.volume_plus_plus.app.ui
 
 import android.app.Activity
-import android.app.NotificationManager
+import android.app.StatusBarManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -70,10 +72,12 @@ import com.volume_plus_plus.app.overlay.AppVolumeController
 import com.volume_plus_plus.app.overlay.EditOrientation
 import com.volume_plus_plus.app.overlay.LiveEditMode
 import com.volume_plus_plus.app.overlay.LiveEditSession
+import com.volume_plus_plus.app.overlay.MediaBooster
 import com.volume_plus_plus.app.overlay.OverlayController
 import com.volume_plus_plus.app.overlay.OverlayVersion
 import com.volume_plus_plus.app.overlay.StepHaptics
-import com.volume_plus_plus.app.service.VolumeKeyService
+import com.volume_plus_plus.app.permissions.rememberPermissionState
+import com.volume_plus_plus.app.service.VolumePanelTileService
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -181,6 +185,11 @@ private fun OverlaySetup(
     var floatingButton by remember { mutableStateOf(prefs.isFloatingButtonEnabled()) }
     var onlyVolumeMixing by remember { mutableStateOf(prefs.isOnlyVolumeMixingEnabled()) }
     var popupDuration by remember { mutableStateOf(prefs.getPopupDurationSeconds()) }
+    var rememberAppVolumes by remember { mutableStateOf(prefs.isRememberAppVolumesEnabled()) }
+    var mediaBoost by remember { mutableStateOf(prefs.isMediaBoostEnabled()) }
+    var boostAvailable by remember {
+        mutableStateOf(MediaBooster.availability != MediaBooster.Availability.UNAVAILABLE)
+    }
     var holdFollowScale by remember { mutableStateOf(prefs.getHoldFollowScale()) }
     var holdSettleScale by remember { mutableStateOf(prefs.getHoldSettleScale()) }
     var holdStepHaptics by remember { mutableStateOf(prefs.isHoldStepHapticsEnabled()) }
@@ -190,9 +199,11 @@ private fun OverlaySetup(
     // setting the level is exactly what a held volume key will give them.
     val vibrator = remember(context) { StepHaptics.vibrator(context) }
 
-    var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
-    var accessibilityOn by remember { mutableStateOf(isAccessibilityEnabled(context)) }
-    var dndAccessOn by remember { mutableStateOf(hasDndAccess(context)) }
+    // Every grant, live: watched at the platform level rather than re-read on resume, so a switch
+    // flipped in Settings ticks here the instant it moves — including while this screen is still on
+    // screen next to it, and including the accessibility service, which reports its own connection.
+    val permissions = rememberPermissionState()
+    val canOverlay = permissions.overlay
 
     // A dedicated controller so "Preview" can show the panel without the accessibility service. It
     // gets its own volume store, left unstarted: the preview is transient, so it needs no background
@@ -206,19 +217,23 @@ private fun OverlaySetup(
         }
     }
 
+    // Only the prefs: the grants above keep themselves current without waiting for a resume.
     LifecycleResumeEffect(Unit) {
-        canOverlay = Settings.canDrawOverlays(context)
-        accessibilityOn = isAccessibilityEnabled(context)
-        dndAccessOn = hasDndAccess(context)
         systemVolumePanel = prefs.isSystemVolumePanelEnabled()
         settingsOpensApp = prefs.isSettingsOpensAppEnabled()
         floatingButton = prefs.isFloatingButtonEnabled()
         onlyVolumeMixing = prefs.isOnlyVolumeMixingEnabled()
         popupDuration = prefs.getPopupDurationSeconds()
+        rememberAppVolumes = prefs.isRememberAppVolumesEnabled()
+        mediaBoost = prefs.isMediaBoostEnabled()
+        // The user may have just set Shizuku or root up on the Mixing tab, which can turn a device
+        // that couldn't boost into one that can.
+        MediaBooster.refreshAvailability()
+        boostAvailable = MediaBooster.availability != MediaBooster.Availability.UNAVAILABLE
         holdFollowScale = prefs.getHoldFollowScale()
         holdSettleScale = prefs.getHoldSettleScale()
-            holdStepHaptics = prefs.isHoldStepHapticsEnabled()
-            holdStepHapticIntensity = prefs.getHoldStepHapticIntensity()
+        holdStepHaptics = prefs.isHoldStepHapticsEnabled()
+        holdStepHapticIntensity = prefs.getHoldStepHapticIntensity()
         onPauseOrDispose { }
     }
 
@@ -242,10 +257,11 @@ private fun OverlaySetup(
             // the list can't travel that far (e.g. the switch is already near the end).
             scrollState.animateScrollBy(cardY!! - viewportY!!)
             repeat(HIGHLIGHT_PULSES) {
-                highlight.animateTo(1f, tween(HIGHLIGHT_PULSE_MS))
-                highlight.animateTo(0f, tween(HIGHLIGHT_PULSE_MS))
+                highlight.animateTo(1f, animationSpec = tween(HIGHLIGHT_PULSE_MS))
+                highlight.animateTo(0f, animationSpec = tween(HIGHLIGHT_PULSE_MS))
             }
         } finally {
+            highlight.snapTo(0f)
             markHighlightShown()
         }
     }
@@ -253,17 +269,13 @@ private fun OverlaySetup(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(scrollState)
             .padding(contentPadding)
-            // Outside `verticalScroll`, so this measures the viewport and not the scrolled content.
-            .onGloballyPositioned {
-                viewportCenter = it.positionInRoot().y + it.size.height / 2f
-            }
-            .verticalScroll(scrollState),
+            .padding(bottom = 16.dp)
+            .onGloballyPositioned { coords ->
+                viewportCenter = coords.positionInRoot().y + coords.size.height / 2f
+            },
     ) {
-        ScreenHeader(title = s.overlayTitle, subtitle = s.overlaySubtitle)
-
-        InfoCard(s.overlayIntro)
-
         StatusStep(
             title = s.setupStep(1, s.overlayStepDrawOver),
             done = canOverlay,
@@ -280,7 +292,7 @@ private fun OverlaySetup(
         StatusStep(
             title = s.setupStep(2, s.overlayStepAccessibility),
             subtitle = s.overlayStepAccessibilityDetail,
-            done = accessibilityOn,
+            done = permissions.accessibility,
             actionLabel = s.openSettings,
             onAction = {
                 val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -292,7 +304,7 @@ private fun OverlaySetup(
         StatusStep(
             title = s.setupStep(3, s.overlayStepDnd),
             subtitle = s.overlayStepDndDetail,
-            done = dndAccessOn,
+            done = permissions.dnd,
             actionLabel = s.openSettings,
             onAction = {
                 val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
@@ -301,7 +313,7 @@ private fun OverlaySetup(
             },
         )
 
-        val ready = canOverlay && accessibilityOn && dndAccessOn
+        val ready = permissions.ready
         Text(
             text = when {
                 // With the system panel in charge the overlay never opens, so don't claim it's ready.
@@ -371,6 +383,47 @@ private fun OverlaySetup(
                 },
             )
         }
+        // Not tied to `styleEnabled`: the per-app levels are applied by the privileged service
+        // whether or not the volume keys open our panel, so this keeps working with the system
+        // panel in charge.
+        SettingSwitch(
+            title = s.overlayMediaBoost,
+            subtitle = if (boostAvailable) s.overlayMediaBoostDetail
+            else s.overlayMediaBoostUnavailable,
+            // The ⓘ carries the distortion and hearing warning, the way the step-haptics row does.
+            info = s.overlayMediaBoostInfo,
+            // Greyed with the system-panel switch, since the boost rides on volume keys we no longer
+            // handle, and greyed when the platform simply refuses to give us the gain.
+            checked = mediaBoost && boostAvailable,
+            enabled = styleEnabled && boostAvailable,
+            onCheckedChange = {
+                mediaBoost = it
+                prefs.setMediaBoostEnabled(it)
+                if (!it) MediaBooster.reset()
+            },
+        )
+        SettingSwitch(
+            title = s.overlayRememberAppVolumes,
+            subtitle = s.overlayRememberAppVolumesDetail,
+            checked = rememberAppVolumes,
+            onCheckedChange = {
+                rememberAppVolumes = it
+                prefs.setRememberAppVolumesEnabled(it)
+            },
+        )
+        // Reaching the panel without the volume keys. Deliberately not tied to `styleEnabled`:
+        // the tile opens the Volume++ panel whether or not the keys are left to Android's own, and
+        // it needs neither the accessibility service nor DND access — only step 1.
+        val canRequestTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        SettingAction(
+            title = s.overlayQuickTile,
+            subtitle = s.overlayQuickTileDetail,
+            // Below Android 13 an app has no way to offer a tile, so there is nothing to press and
+            // the row explains how to drag it in by hand instead.
+            actionLabel = if (canRequestTile) s.overlayQuickTileAdd else null,
+            onAction = { requestAddTile(context, s.qsTileLabel) },
+            footnote = if (canRequestTile) null else s.overlayQuickTileManual(s.qsTileLabel),
+        )
         Text(
             text = s.overlayStyle,
             style = MaterialTheme.typography.titleMedium,
@@ -447,7 +500,10 @@ private fun OverlaySetup(
             enabled = holdStepHaptics,
             value = holdStepHapticIntensity,
             valueRange = 0.5f..2.0f,
-            steps = 150,
+            // 149, like the other two rows, so one notch is exactly 0.01 and a ± press moves the
+            // readout by a whole percentage point. At 150 the notch is 1.5/151, which drifts off
+            // the grid and would leave the stepper landing on values a drag can't reach.
+            steps = 149,
             onValueChange = {
                 val previous = holdStepHapticIntensity
                 holdStepHapticIntensity = it
@@ -455,6 +511,13 @@ private fun OverlaySetup(
                 // Sample as it's dragged, but only each 10% of travel — the slider emits far too
                 // many values to buzz on every one, and a tick per notch reads as a detent.
                 if ((it * 10).toInt() != (previous * 10).toInt()) StepHaptics.play(vibrator, it)
+            },
+            // A ± press is a single deliberate notch, so it always samples — the drag rule above
+            // would swallow it, since one notch almost never crosses a 10% bucket.
+            onStepChange = {
+                holdStepHapticIntensity = it
+                prefs.setHoldStepHapticIntensity(it)
+                StepHaptics.play(vibrator, it)
             },
         )
         Button(
@@ -487,7 +550,14 @@ private fun OverlaySetup(
     }
 }
 
-/** A titled slider. [info] adds the ⓘ button that explains, in plain words, what it changes. */
+/**
+ * A titled slider. [info] adds the ⓘ button that explains, in plain words, what it changes.
+ *
+ * The − / + buttons move exactly one notch, so a value can be set precisely without fighting a drag
+ * — the same control the Volume tab's stream rows have. [onStepChange] lets a row react differently
+ * to a discrete press than to a drag; it falls back to [onValueChange], which is right for every row
+ * whose only job is to store the new value.
+ */
 @Composable
 private fun SettingSlider(
     title: String,
@@ -498,8 +568,16 @@ private fun SettingSlider(
     enabled: Boolean = true,
     valueLabel: ((Float) -> String)? = null,
     onValueChange: (Float) -> Unit,
+    onStepChange: ((Float) -> Unit)? = null,
 ) {
     val s = strings()
+    // One notch of the slider's own grid, so a stepped value always lands on a position a drag could
+    // also reach. With the 0.5..2.0 range and 149 steps that is exactly 0.01 — one percentage point.
+    val notch = (valueRange.endInclusive - valueRange.start) / (steps + 1)
+    val applyStep = onStepChange ?: onValueChange
+    fun step(direction: Int) {
+        applyStep((value + direction * notch).coerceIn(valueRange))
+    }
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -517,7 +595,9 @@ private fun SettingSlider(
                         color = if (enabled) Color.Unspecified else disabledContentColor(),
                     )
                     Text(
-                        text = valueLabel?.invoke(value) ?: s.percent((value * 100).toInt()),
+                        // Rounded, not truncated: a stepper makes an off-by-one readout obvious,
+                        // where a drag past it never stopped long enough to be noticed.
+                        text = valueLabel?.invoke(value) ?: strings().percent((value * 100).roundToInt()),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
                         else disabledContentColor(),
@@ -525,14 +605,28 @@ private fun SettingSlider(
                 }
                 if (info != null) InfoButton(title = title, body = info)
             }
-            VolumeSlider(
-                value = value,
-                onValueChange = onValueChange,
-                valueRange = valueRange,
-                steps = steps,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StepButton(
+                    icon = R.drawable.ic_remove,
+                    description = s.settingStepDown(title),
+                    enabled = enabled && value > valueRange.start + notch / 2,
+                    onStep = { step(-1) },
+                )
+                VolumeSlider(
+                    value = value,
+                    onValueChange = onValueChange,
+                    valueRange = valueRange,
+                    steps = steps,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                )
+                StepButton(
+                    icon = R.drawable.ic_add,
+                    description = s.settingStepUp(title),
+                    enabled = enabled && value < valueRange.endInclusive - notch / 2,
+                    onStep = { step(1) },
+                )
+            }
         }
     }
 }
@@ -679,6 +773,73 @@ private fun SkinPicker(
     }
 }
 
+/**
+ * A row whose action is a button rather than a switch, in the same card as [SettingSwitch] so the
+ * options on this page still read as one list. [footnote] takes the button's place where the
+ * platform gives us no way to perform the action, and says what to do by hand instead.
+ */
+@Composable
+private fun SettingAction(
+    title: String,
+    subtitle: String,
+    actionLabel: String?,
+    onAction: () -> Unit,
+    footnote: String? = null,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 4.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (footnote != null) {
+                    Text(
+                        text = footnote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+            if (actionLabel != null) {
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onAction) { Text(actionLabel) }
+            }
+        }
+    }
+}
+
+/**
+ * Ask the system to offer the Quick Settings tile: Android 13+ shows its own confirmation dialog and
+ * places the tile if the user accepts. There is no equivalent below that, so this is a no-op there
+ * and [SettingAction]'s footnote explains the manual route.
+ */
+private fun requestAddTile(context: Context, label: String) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val statusBar = context.getSystemService(StatusBarManager::class.java) ?: return
+    runCatching {
+        statusBar.requestAddTileService(
+            ComponentName(context, VolumePanelTileService::class.java),
+            label,
+            android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_nav_volume),
+            ContextCompat.getMainExecutor(context),
+        ) { /* the system dialog already tells the user how it went */ }
+    }
+}
+
 @Composable
 private fun StatusStep(
     title: String,
@@ -726,20 +887,3 @@ private fun StatusStep(
 @Composable
 private fun disabledContentColor(): Color =
     MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-
-/** True if our [VolumeKeyService] appears in the system's enabled-accessibility-services list. */
-private fun isAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(context, VolumeKeyService::class.java).flattenToString()
-    val enabled = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-    ) ?: return false
-    return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
-}
-
-/** True if we hold Do Not Disturb / notification-policy access, needed to change the ringer mode. */
-private fun hasDndAccess(context: Context): Boolean {
-    val notificationManager =
-        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    return notificationManager.isNotificationPolicyAccessGranted
-}

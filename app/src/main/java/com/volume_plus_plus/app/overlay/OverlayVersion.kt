@@ -3,7 +3,7 @@ package com.volume_plus_plus.app.overlay
 import com.volume_plus_plus.app.data.OverlayPrefs
 
 /**
- * One directly-selectable Android version in the overlay style picker (Android 7–15). Each maps to
+ * One directly-selectable Android version in the overlay style picker (Android 7–16). Each maps to
  * the underlying [OverlaySkin] plus, where the skin covers several releases, the sub-version pref its
  * skin reads — so picking e.g. "Android 15" both selects the 13–15 skin and sets its icon set.
  *
@@ -18,6 +18,7 @@ enum class OverlayVersion(
     val legacyVersion: LegacyVersion? = null,
     val sevenEightVersion: SevenEightVersion? = null,
 ) {
+    ANDROID_16("Android 16", OverlaySkin.ANDROID_13_14, iconSet = IconSet.ANDROID_16),
     ANDROID_15("Android 15", OverlaySkin.ANDROID_13_14, iconSet = IconSet.ANDROID_15),
     ANDROID_14("Android 14", OverlaySkin.ANDROID_13_14, iconSet = IconSet.ANDROID_14),
     ANDROID_13("Android 13", OverlaySkin.ANDROID_13_14, iconSet = IconSet.ANDROID_13),
@@ -38,10 +39,10 @@ enum class OverlayVersion(
 
     /**
      * Whether this version has the Android 15 media-output picker ("This phone") as a third editable
-     * surface. Only the Android 15 style draws it; every other version routes its media output through
-     * the main/expanded panels alone.
+     * surface. The Android 15 and 16 styles draw it; every other version routes its media output
+     * through the main/expanded panels alone.
      */
-    val hasOutputPicker: Boolean get() = iconSet == IconSet.ANDROID_15
+    val hasOutputPicker: Boolean get() = iconSet?.usesOutputSheet == true
 
     /** The components this version exposes for editing (both position and colour). */
     fun components(): List<PanelComponent> = buildList {
@@ -66,6 +67,7 @@ enum class OverlayVersion(
                 IconSet.ANDROID_13 -> ANDROID_13
                 IconSet.ANDROID_14 -> ANDROID_14
                 IconSet.ANDROID_15 -> ANDROID_15
+                IconSet.ANDROID_16 -> ANDROID_16
             }
             OverlaySkin.ANDROID_9_11 -> when (prefs.getLegacyVersion()) {
                 LegacyVersion.ANDROID_9 -> ANDROID_9

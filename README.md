@@ -26,12 +26,13 @@ never individual apps. Volume++ replaces that panel outright and fills in both g
   captures volume-up/volume-down presses before the system does, suppresses the stock panel, and
   draws its own floating overlay instead — with the same press-and-hold ramping behavior as the
   real thing.
-- **Faithful recreations of every major Android volume-panel design, Android 7 through 15.**
+- **Faithful recreations of every major Android volume-panel design, Android 7 through 16.**
   The overlay isn't one fixed look — it can render the classic Android 7/8 top sheet, the
   Android 9–11 collapsed-edge-control-plus-"Sound"-sheet layout, Material You's Android 12 panel,
-  and the Android 13/14/15 "Sound & vibration" sheet (including Android 15's redesigned
-  "Audio will play on" media-output picker). You pick which version's panel you want, independent
-  of the Android version actually installed on the device.
+  and the Android 13/14/15/16 "Sound & vibration" sheet (including Android 15's redesigned
+  "Audio will play on" media-output picker, and Android 16's call-folded take on it). You pick
+  which version's panel you want, independent of the Android version actually installed on the
+  device.
 - **A live, on-screen WYSIWYG editor** for repositioning every panel component (main panel,
   expanded sheet, output picker) per orientation by dragging it around the screen, and a color
   editor that lets you tap any element of the panel — background, slider fill/track, icons,
@@ -44,15 +45,25 @@ never individual apps. Volume++ replaces that panel outright and fills in both g
   playing, which is what makes true audio mixing between two apps possible.
 - Per-app volume choices are remembered for the life of a playback session and silently
   re-applied as the app's audio players churn (e.g. across screen off/on or backgrounding), so a
-  level you set doesn't reset back to full the next time the app makes a sound — it only resets
-  once the app's process is actually gone.
+  level you set doesn't reset back to full the next time the app makes a sound. They are also
+  **stored per app**, so closing the app — or rebooting — no longer forgets them: set YouTube to
+  30% and that is where it starts next time. Turn an app back up to 100% to forget it again.
+- **The panel follows a call.** A call in progress reshapes it the way the stock panel does: the
+  call slider takes over as the main control, media moves beside it, and the volume keys drive the
+  call. A cellular call and an app's own voice or video chat both count.
+- **A media volume booster**, off by default: once media volume is at 100%, pressing Volume Up
+  twice engages up to +20% of extra gain in 5% steps, shown as its own bar above the media
+  slider. A *held* key never engages it — only deliberate presses — and it clears itself when you
+  drop below 100% or change audio output.
 - **Four languages**, picked in the app or followed from the device: English, Español, Português
   and Français.
 
-## The volume panel, Android 7 → 15
+## The volume panel, Android 7 → 16
 
-One app, nine panels. Each one is picked in **Overlay → Style**, and each keeps its own position
+One app, ten panels. Each one is picked in **Overlay → Style**, and each keeps its own position
 and its own colors, so switching between them doesn't disturb anything you've set up on the others.
+The grid below shows nine of them: Android 16 is Android 15 to look at, and parts company with it
+only once a call is in progress.
 
 *(Every shot below comes from one Android 9 device running one build of Volume++. The panel style
 is the app's, not the system's — which is the whole point.)*
@@ -87,6 +98,12 @@ sync with whatever else changes the volume. The Notification row greys out while
 silenced, because notifications can't make a sound then anyway; and if Do Not Disturb blocks a
 ring change, the tab offers the access screen rather than failing quietly.
 
+Each row has **− / + buttons** for exact single-step changes, held down to repeat on the same
+accelerating ramp as a hardware key, and shows the level as both a percentage and the device's
+real step position — `73% · 11/15`. How many steps a channel has is fixed by the device and can't
+be widened by an app, so showing them is what explains why a level lands on 73% and not 74%:
+there is no position in between.
+
 ### Mixing
 
 One switch per app: turn it on and that app keeps playing when something else starts. The tab
@@ -106,9 +123,15 @@ service all survive. The card only appears while the source still looks sideload
 ### Overlay
 
 Where the panel is set up and styled: the three permission grants, the switch that hands the
-volume keys back to Android, the style picker (Android 7 → 15, each with its own editor), the
+volume keys back to Android, the style picker (Android 7 → 16, each with its own editor), the
 motion and haptics settings, and an option to point the panel's SETTINGS / SEE MORE button at
-Volume++ instead of Android's Sound settings.
+Volume++ instead of Android's Sound settings. The motion and haptics sliders carry the same
+− / + steppers as the Volume tab, so each can be set to an exact percentage.
+
+It also holds the **media volume booster** switch (off by default, with the clipping and hearing
+warning behind its ⓘ), the switch for **remembering each app's volume** across restarts, and the
+button that adds the **Quick Settings tile** — a way to open the panel that doesn't involve the
+volume keys at all, for a phone whose buttons have worn out.
 
 |                        Permissions                         |                          Styles                           |                        Motion & haptics                    |
 | :--------------------------------------------------------: | :-------------------------------------------------------: | :--------------------------------------------------------: |
@@ -125,10 +148,11 @@ against that style alone.
 
 - **Position** — the real panel is drawn on a dimmed backdrop and dragged where you want it, once
   per orientation. Every component moves independently: the main panel, the expanded sheet, and
-  (on Android 15) the media-output picker.
+  (on Android 15 and 16) the media-output picker.
 - **Colours** — tap any part of the panel to recolor it: background, slider fill and track, icons,
   accent, text, buttons. Colors are shared across orientations, so they're edited in whichever way
-  the device happens to be held.
+  the device happens to be held. **Use system colours** fills the whole palette from the device's
+  own Material You scheme in one tap (Android 12+), as a starting point you can then tune.
 - **Restore defaults** — **Restore default position** puts every one of that style's panels back
   where it docks (both orientations), and **Restore default colours** drops its colour overrides.
   Each undoes only its own half, and neither touches any other style.
@@ -193,7 +217,7 @@ replaces the system panel and controls the ordinary system streams.
 
 - **Motion** — two sliders (50–200%) scale the panel's easing while a volume key is held: how fast
   it *follows* your presses, and how softly it *settles* afterwards. 100% is the stock feel. The
-  same glide runs on all nine skins, and dragging a slider trails your finger by a tuned amount
+  same glide runs on all ten skins, and dragging a slider trails your finger by a tuned amount
   rather than snapping to it, settling smoothly once you let go.
 - **Haptics** — an optional light tap on every volume step, whether the step came from holding a
   key or from dragging a slider, with its own intensity slider (50–200%) that plays a live sample
@@ -223,6 +247,47 @@ Translations are plain Kotlin files with a per-key English fallback, so a partia
 perfectly usable — adding a language is two edits, documented in [docs/TRANSLATING.md](docs/TRANSLATING.md).
 
 ## Release history
+
+### 2.0
+
+- **The panel now follows a call.** A call in progress reshapes the panel the way the stock one
+  does: the call slider takes over as the main control, media moves beside it, and the volume keys
+  drive the call. Both kinds count — a cellular call and an app's own voice or video chat (Discord,
+  a messenger call, an in-game voice channel). Every style reshapes, each in the shape its own
+  layout allows: Android 12–16 grow a second card beside the main one, 9–11 stand the two sliders
+  side by side inside the card they already have, and 7–8 give the call a row in Ring's place. On
+  Android 15 and 16 the output card names the call's own output while it lasts.
+- **A tenth style: Android 16.** Android 15's panel and sheet, until a call — the sheet then opens
+  on the Call row alone, with a round chevron beside it that unfolds Media, Ring, Notification and
+  Alarm underneath, and draws its "Calling on" card in a grey surface rather than 15's white one.
+  It is the style a fresh install now opens on.
+- **Quick Settings tile** that opens the panel, so it can still be reached on a phone whose volume
+  buttons have failed. It needs only draw-over-other-apps — no accessibility service — and the
+  Overlay tab has a one-tap button to add it (Android 13+; older releases get instructions).
+- **Precise volume controls**: − / + steppers on every slider in the Volume tab and on the motion
+  and haptics sliders, held down to repeat, with each level shown as a percentage *and* the
+  device's real step position (`73% · 11/15`).
+- **Each app's volume is now remembered across restarts and reboots**, not just for the current
+  playback session — set YouTube to 30% and that is where it starts next time. On by default;
+  the switch is in **Overlay**, and turning an app back up to 100% forgets it.
+  *(Behaviour change: new playback used to always start at full volume.)*
+- **Media volume booster**, off by default. At 100%, two Volume Up presses engage up to +20% of
+  extra gain in 5% steps, drawn as its own bar above the media slider. A held key never engages
+  it, and it clears when you drop below 100% or change audio output. Needs Shizuku or root on most
+  devices, and says so when the device won't allow it.
+- **Use system colours** in the colour editor — one tap fills the panel being edited from the
+  device's own Material You scheme, mapped role by role (fill and accent from the primary, the
+  panel from the surface, the icons that ride inside a filled control from the on-primary tone)
+  rather than pasted flat. Offered on Android 12+, where there is a system palette to read.
+- **Truer capsule sliders on Android 12–14** — the thin stick behind the fill now has its own
+  sampled slate instead of borrowing the pale sheet-track grey it was nearly invisible against. A
+  track colour you set yourself still wins over it.
+- **Fix: a single volume press could behave like a stuck key**, ramping the volume to an end and
+  pinning the panel on screen. A hold is a latch, and several paths could lose the release that
+  clears it — most often the display sleeping mid-press, which stops volume keys reaching an
+  accessibility service at all. The hold now ends on a lost release rather than running on.
+- **Power + volume chords** (screenshot, and OEM chords besides) no longer move the volume or raise
+  the panel on builds that pass both keys through to us.
 
 ### 1.1.5
 
@@ -279,6 +344,11 @@ perfectly usable — adding a language is two edits, documented in [docs/TRANSLA
   `pm install -r -t -i com.android.vending` reinstall that relabels a sideloaded install source,
   and hidden `AudioManager`/`AudioPlaybackConfiguration` APIs for per-player volume, activity and
   process liveness.
+- **`PanelLauncher` / `VolumePanelTileService`** — the Quick Settings way into the panel. The tile
+  is bound only around the tap, so the launcher is what holds a panel that has to outlive it,
+  lending out the accessibility service's own controller whenever that service is running.
+- **`MediaBooster` / `BoostBar`** — the above-100% gain (a `LoudnessEnhancer` on the global output
+  mix, applied through the privileged service) and the bar that draws it above the media slider.
 - **`StepHaptics`** — the one tuned buzz behind every volume step, shared by the held-key repeat
   and by slider drags so both feel identical at any intensity.
 - **`ScreenColorPicker` / `ColorPickService`** — the eyedropper. A `mediaProjection` foreground
@@ -286,6 +356,9 @@ perfectly usable — adding a language is two edits, documented in [docs/TRANSLA
   the grabbed frame is frozen under a magnifier loupe for the actual pick.
 - **`AppRepository`** — enumerates every installed app (not just launchable ones) as candidates
   for the mixing toggle, with known music/video apps sorted to the top.
+- **`Permissions`** — every grant the app asks for as one snapshot, watched continuously and told
+  directly by the accessibility service's own connect/disconnect, so the setup checklist ticks
+  while the user is still standing on the Settings screen.
 - **`AppConfig` / `AppSettings` / `Strings`** — build-time configuration, the user's saved theme
   and language, and the translations themselves.
 
@@ -296,9 +369,9 @@ perfectly usable — adding a language is two edits, documented in [docs/TRANSLA
   foundations that make per-app volume and audio-focus control possible — one without root, one
   with. Both are real dependencies the app binds to at runtime, not just inspirations.
 - The volume-panel skins are original re-implementations of AOSP/SystemUI's own volume dialog
-  designs from each Android release (7 through 15) — built from scratch in Compose/Views to look
+  designs from each Android release (7 through 16) — built from scratch in Compose/Views to look
   and animate like the real thing, not copied from another app's source.
-- Everything else (UI, overlay engine, mixing logic, per-app session persistence, the eyedropper,
+- Everything else (UI, overlay engine, mixing logic, per-app volume persistence, the eyedropper,
   the translations) is original code written for this project.
 
 ## Tech stack
@@ -318,7 +391,11 @@ perfectly usable — adding a language is two edits, documented in [docs/TRANSLA
   and shows the custom panel with system stream volumes only. (Per-app sliders additionally need
   Android 13+.)
 - **Accessibility service** — required to intercept the hardware volume keys.
-- **Display over other apps** (`SYSTEM_ALERT_WINDOW`) — required to draw the custom panel.
+- **Display over other apps** (`SYSTEM_ALERT_WINDOW`) — required to draw the custom panel, and the
+  only grant the Quick Settings tile needs.
+- **`MODIFY_AUDIO_SETTINGS`** — granted at install, and what the media volume booster attaches its
+  gain through. It is not sufficient on its own: an effect on the global output mix needs the
+  signature-level `MODIFY_AUDIO_ROUTING`, so the booster goes through Shizuku or root as well.
 - **Notification policy access** — lets ring/notification volume be changed even under Do Not
   Disturb.
 - **Screen capture** — asked for only when the eyedropper is used, and only for as long as it runs.

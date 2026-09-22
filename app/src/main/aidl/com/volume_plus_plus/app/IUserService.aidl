@@ -67,4 +67,20 @@ interface IUserService {
      * {@code pm} output ("Success" on success).
      */
     String setInstallerSource(String installerPackage) = 8;
+
+    /**
+     * Applies a global media loudness boost of {@code gainMillibels} (0 = off, which also releases
+     * the effect and is what callers use to probe whether boosting works here at all) by attaching
+     * a {@code LoudnessEnhancer} to the global output mix from this process.
+     *
+     * The app's own UID cannot do this. Attaching an effect to the output mix (session 0) is gated
+     * on MODIFY_AUDIO_ROUTING, a signature-level permission: root holds it, because the framework
+     * grants root and system every permission outright, while the shell UID Shizuku runs as holds
+     * only whatever {@code com.android.shell} was built with, which varies by OEM. So this can
+     * legitimately fail even with the service bound, and callers must report the booster as
+     * unavailable rather than draw a control that does nothing.
+     *
+     * Returns "" on success, otherwise a diagnostic beginning with "ERROR".
+     */
+    String setLoudnessGain(int gainMillibels) = 9;
 }

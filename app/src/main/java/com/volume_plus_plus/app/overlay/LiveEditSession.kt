@@ -538,6 +538,36 @@ class LiveEditSession(
         actions.addView(textAction(strings.liveEditPickFromScreen, accent) { startEyedropper() })
         panel.addView(actions)
 
+        // The system fill gets a row of its own: both actions above act on the one selected element,
+        // while this one rewrites the whole panel's palette — and on a device without a system
+        // palette to read (pre-Android 12) there is nothing to offer, so it isn't drawn at all.
+        if (systemPaletteAvailable()) {
+            val systemRow = LinearLayout(appCtx).apply { orientation = LinearLayout.HORIZONTAL }
+            systemRow.addView(textAction(strings.liveEditUseSystemColours, accent) { applySystemColors() })
+            panel.addView(systemRow)
+        }
+
+        refreshPickerFromSelection()
+    }
+
+    /**
+     * Fill every swatch this panel exposes from the device's own Material You colours — one tap
+     * instead of dialling each element by hand, and a starting point the user can still tune from.
+     *
+     * Scoped to the component being edited, so switching to the expanded sheet (or the output picker)
+     * and filling that one leaves what's already set on the others alone. The palette is read for the
+     * theme this session is editing in, and lands as ordinary per-element overrides — the same ones
+     * the wheel writes — so Cancel discards it, Save keeps it, and "Use default" still drops any one
+     * of them back to the skin's own colour.
+     */
+    private fun applySystemColors() {
+        val palette = systemPalette(appCtx, dark) ?: return
+        // A half-typed hex belongs to the colour that was selected a moment ago; committing it after
+        // the fill would write it straight back over the element this just recoloured.
+        dismissHexKeyboard(commit = false)
+        palette.fillFor(version, config.component).forEach { (c, value) -> config.withColor(c, value) }
+        controller.applyLiveColors()
+        rebuildSwatches()
         refreshPickerFromSelection()
     }
 
@@ -646,7 +676,7 @@ class LiveEditSession(
      *  reference palette (matching the renderer's [buildStyle]) so its chips show the colours actually
      *  drawn; every other component seeds from the plain skin style. */
     private fun seedBaseStyle(): OverlayStyle =
-        if (config.component == PanelComponent.EXPANDED && version.iconSet == IconSet.ANDROID_15)
+        if (config.component == PanelComponent.EXPANDED && version.iconSet?.usesOutputSheet == true)
             if (dark) baseStyle.withAndroid15SheetDark() else baseStyle.withAndroid15SheetLight()
         else baseStyle
 

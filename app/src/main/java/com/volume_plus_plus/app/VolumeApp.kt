@@ -3,6 +3,7 @@ package com.volume_plus_plus.app
 import android.app.Application
 import android.content.res.Configuration
 import com.volume_plus_plus.app.config.AppSettings
+import com.volume_plus_plus.app.permissions.Permissions
 
 /**
  * Exists to give [AppSettings] one guaranteed initialisation point.
@@ -17,6 +18,10 @@ class VolumeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         AppSettings.init(this)
+        // Before anything can ask: the grant watchers have to be live from the moment the process
+        // exists, so a switch flipped while we're in the background is already accounted for by the
+        // time a screen is drawn. Idempotent, and it registers listeners rather than polling.
+        Permissions.init(this)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
