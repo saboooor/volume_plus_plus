@@ -52,6 +52,9 @@ object SpanishStrings : Strings() {
     override val volumeSubtitle get() = "Controla cada canal de sonido"
     override val volumeAppVolumes get() = "Volumen por app"
 
+    override fun volumeStepDown(channel: String) = "Bajar $channel un paso"
+    override fun volumeStepUp(channel: String) = "Subir $channel un paso"
+
     override val streamMedia get() = "Multimedia"
     override val streamCall get() = "Llamada"
     override val streamRing get() = "Timbre"
@@ -177,6 +180,18 @@ object SpanishStrings : Strings() {
         "El botón AJUSTES / VER MÁS del panel abre Volume++ en lugar de los ajustes de " +
             "sonido de Android."
 
+    // ── mosaico de Ajustes rápidos ──────────────────────────────────────────────────────────────
+
+    override val qsTileLabel get() = "Panel de Volume++"
+
+    override val overlayQuickTile get() = "Mosaico de Ajustes rápidos"
+    override val overlayQuickTileDetail get() =
+        "Abre el panel desde los Ajustes rápidos, para que puedas seguir usándolo si las teclas de " +
+            "volumen dejan de funcionar. Solo necesita el primer paso de arriba."
+    override val overlayQuickTileAdd get() = "Añadir mosaico"
+    override fun overlayQuickTileManual(tile: String) =
+        "Abre los Ajustes rápidos, toca Editar y arrastra el mosaico \"$tile\"."
+
     override val overlayMotion get() = "Movimiento"
     override val overlayPopupDuration get() = "Duración del panel"
     override val overlayMotionInfo get() =
@@ -274,6 +289,7 @@ object SpanishStrings : Strings() {
         "Toca el panel o una muestra y luego ajusta o escribe un color"
     override val liveEditUseDefault get() = "Usar el predeterminado"
     override val liveEditPickFromScreen get() = "Elegir de la pantalla"
+    override val liveEditUseSystemColours get() = "Usar los colores del sistema"
 
     override val liveEditComponentMain get() = "Principal"
     override val liveEditComponentExpanded get() = "Ampliado"
@@ -358,6 +374,7 @@ object SpanishStrings : Strings() {
     override val panelTurnOffNow get() = "DESACTIVAR AHORA"
 
     override val panelAudioWillPlayOn get() = "El audio se reproducirá en"
+    override val panelCallingOn get() = "Llamando en"
     override val panelConnectADevice get() = "Conectar un dispositivo"
     override val outputThisPhone get() = "Este teléfono"
     override val outputWiredHeadphones get() = "Auriculares con cable"

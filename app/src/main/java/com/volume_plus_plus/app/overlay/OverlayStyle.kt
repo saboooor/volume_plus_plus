@@ -11,7 +11,7 @@ enum class OverlaySkin(val displayName: String) {
 }
 
 /**
- * For the Android 13–15 skin, which OS revision's volume-panel presentation to mimic:
+ * For the Android 13–16 skin, which OS revision's volume-panel presentation to mimic:
  * - [ANDROID_13]: the classic bell + a single combined "Ring & notification" control.
  * - [ANDROID_14]: the notification stream gets its own slider (split from Ring) with a
  *   megaphone/"sound" ringer icon instead of the bell.
@@ -19,12 +19,25 @@ enum class OverlaySkin(val displayName: String) {
  *   "Audio will play on / This phone" output selector on top, filled-pill sliders (icon + label
  *   inside, a trailing dot) for every stream, and a media-output picker that shows the volume as a
  *   percentage while dragging.
+ * - [ANDROID_16]: Android 15's panel and sheet unchanged, until a call. The sheet then opens on the
+ *   Call row alone, with a round chevron button beside it that unfolds Media, Ring, Notification and
+ *   Alarm underneath (Call staying on top, where 15 leaves it in its usual second place), and draws
+ *   its "Calling on" card in a grey surface rather than 15's white one.
  * Selected per skin from the overlay settings screen.
  */
 enum class IconSet(val displayName: String) {
     ANDROID_13("Android 13"),
     ANDROID_14("Android 14"),
     ANDROID_15("Android 15"),
+    ANDROID_16("Android 16"),
+    ;
+
+    /**
+     * Whether this icon set draws the Android 15 "Sound & vibration" sheet — the output card on top,
+     * filled-pill rows and the media-output picker behind it. Android 15 and 16 do; 13 and 14 keep
+     * the older sheet. What 16 then does differently *within* that sheet is a call, and only a call.
+     */
+    val usesOutputSheet: Boolean get() = this == ANDROID_15 || this == ANDROID_16
 }
 
 /**
@@ -166,6 +179,15 @@ data class OverlayStyle(
     val pillContentOnFill: Int? = null,
     val pillContentOnTrack: Int? = null,
     /**
+     * The thin centre stick the Android 12–14 capsule slider draws behind its fill, split from the
+     * [trackColor] the sheet rows use. Stock draws it in a mid-slate that is much darker than that
+     * track grey, and only on the main panel — Android 15 has no stick at all (its track is the full
+     * pill) and keeps [trackColor]. Android 12 and 13/14 each carry their own sampled pair; null
+     * means "use [trackColor]", which is what the skins with no capsule slider leave it at. A user's
+     * own track colour still wins over it (see [applyColors]).
+     */
+    val capsuleStickColor: Int? = null,
+    /**
      * The Material You / Android 15 SETTINGS pill's outline colour, split from the general [iconTint]
      * it historically borrowed. Null (every skin's default in [styleFor]) keeps that behaviour; the
      * Android 15 dark sheet pins it to its own reference blue (see [withAndroid15SheetDark]).
@@ -207,6 +229,10 @@ fun styleFor(skin: OverlaySkin, dark: Boolean = false): OverlayStyle = when (ski
         textColor = if (dark) Color.parseColor("#FFE2E2E5") else Color.parseColor("#FF191C1E"),
         inactiveColor = if (dark) Color.parseColor("#FFC3C7CF") else Color.parseColor("#FF43474E"),
         pressedHaloColor = if (dark) Color.parseColor("#26FFFFFF") else Color.parseColor("#1F000000"),
+        // Android 12 draws the same dark stick behind the capsule that 13/14 do — not the pale track
+        // grey, which is nearly invisible against the card. Sampled off a stock Android 12 panel:
+        // #4E616C in light, #9AAEBB in dark.
+        capsuleStickColor = if (dark) Color.parseColor("#FF9AAEBB") else Color.parseColor("#FF4E616C"),
     )
 
     // Android 13/14: identical to Android 12 (same shapes, layout and sheet) except for the primary
@@ -238,6 +264,10 @@ fun styleFor(skin: OverlaySkin, dark: Boolean = false): OverlayStyle = when (ski
         textColor = if (dark) Color.parseColor("#FFE3E1E9") else Color.parseColor("#FF1B1B1F"),
         inactiveColor = if (dark) Color.parseColor("#FFC6C6D0") else Color.parseColor("#FF45464F"),
         pressedHaloColor = if (dark) Color.parseColor("#26FFFFFF") else Color.parseColor("#1F000000"),
+        // The stick behind the Android 13/14 capsule, sampled off the stock panel: a mid-slate in
+        // light, its pale counterpart in dark. Android 15 draws a full pill instead and never reads
+        // this (see [OverlayStyle.capsuleStickColor]).
+        capsuleStickColor = if (dark) Color.parseColor("#FFA5AAC1") else Color.parseColor("#FF595D71"),
     )
 
     // Android 9–11: right-edge collapsed panel (ringer button + vertical media slider + tune

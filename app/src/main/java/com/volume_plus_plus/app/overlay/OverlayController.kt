@@ -216,8 +216,11 @@ class OverlayController(
     private fun buildStyle(): OverlayStyle {
         val base = styleFor(curSkin(), isDark())
         val themed = when {
-            expanded && isAndroid15Sheet() ->
-                if (isDark()) base.withAndroid15SheetDark() else base.withAndroid15SheetLight()
+            expanded && isAndroid15Sheet() -> {
+                val sheet = if (isDark()) base.withAndroid15SheetDark() else base.withAndroid15SheetLight()
+                // Android 16 greys the card while a call is up; 15 keeps the sheet's white one.
+                if (isAndroid16() && callPanel()) sheet.withAndroid16CallCard(isDark()) else sheet
+            }
             else -> base
         }
         return themed.applyColors(activeColors())
@@ -236,15 +239,38 @@ class OverlayController(
     // A placeholder; every render()/show() rebuilds it from the current skin + customization.
     private var style: OverlayStyle = styleFor(curSkin(), isDark())
     private var expanded = false
+
+    /** Android 16 only: whether the call sheet's fold-out (every stream but the call) is showing.
+     *  Stock opens folded, so this starts — and is reset — false. See [callFoldRow]. */
+    private var sheetCallOpen = false
     /** The Android 15 "Audio will play on" output-picker screen is open (a sub-screen of the sheet). */
     private var outputPicker = false
     /** Whether the ringer-mode pop-up menu is open (Material You collapsed panel only). */
     private var ringerMenuOpen = false
     /** True while the panel is playing its slide-off dismissal, so it isn't restarted. */
     private var dismissing = false
-    /** The media (STREAM_MUSIC) slider currently on screen, so volume-key presses can update it in
-     *  place instead of rebuilding the whole panel (which flickers, esp. the Sound sheet). */
+    /** The slider the volume keys drive, currently on screen, so a key press can update it in place
+     *  instead of rebuilding the whole panel (which flickers, esp. the Sound sheet). That is the media
+     *  slider, except on a call-mode panel where the keys drive the call stream instead — see
+     *  [keyStream] — and this holds the call slider, with media parked in [secondarySlider]. */
     private var mediaSlider: VolumeSlider? = null
+    /** The slider on a call-mode panel that the keys aren't driving. Null on every ordinary panel,
+     *  where the one slider the keys drive is all there is. */
+    private var secondarySlider: VolumeSlider? = null
+    /** A call panel's two columns held by which stream each one shows, so a focus change can retint
+     *  them and re-point [mediaSlider] without having to work out which is which. */
+    private var callColumnSlider: VolumeSlider? = null
+    private var mediaColumnSlider: VolumeSlider? = null
+    /** Repaints the Android 9-11 collapsed panel's stream icons for the current level and focus (the
+     *  muted note, and which column wears the accent). Null on every other panel. */
+    private var legacyIconRefresh: (() -> Unit)? = null
+    /** Which of a call panel's two columns wears the accent. The call stream on every fresh panel —
+     *  the one a call put there — and then whichever column the finger last touched, which is how
+     *  the system panel marks the stream you are actually working on. Note that this is presentation
+     *  only: the volume keys go on driving the call stream either way (see [keyStream]). */
+    private var callFocusStream = AudioManager.STREAM_VOICE_CALL
+    /** The above-100% indicator, present only on panels that draw one and only while boosting. */
+    private var boostBar: BoostBar? = null
     /** The Android 9–11 ringer button currently on screen, so a mode change can retint it in place
      *  instead of rebuilding the whole panel (which cancels the app-sync load and drops frames, and
      *  is what made rapid mode taps feel laggy). */
@@ -284,6 +310,11 @@ class OverlayController(
      *  hardware volume keys are used). Null only before the first generic panel is built. */
     private var generic78Selected: VolumeSlider? = null
 
+    /** The rows Android 8's expand chevron belongs to when collapsed and when expanded — the topmost
+     *  visible row in each state. See [applyGenericChevron]. */
+    private var generic78ChevronCollapsed: VolumeSlider? = null
+    private var generic78ChevronExpanded: VolumeSlider? = null
+
     /**
      * The per-app slider box currently on screen and the renderer that builds one row for it, shared
      * by every skin. While a panel is open [appsSyncRunnable] re-queries the active players on a timer
@@ -307,6 +338,18 @@ class OverlayController(
     private var currentSig: String? = null
 
     private val hideRunnable = Runnable { dismissWithAnimation() }
+
+    /** The call state the panel's current view tree was built for — see [watchCallShape]. */
+    private var builtCallShape = false
+
+    /** Re-renders the panel the moment a call starts or ends under it, then re-arms itself through
+     *  [render] → [watchCallShape]. */
+    private val callWatch = object : Runnable {
+        override fun run() {
+            if (root == null || dismissing) return
+            if (callPanel() != builtCallShape) render() else handler.postDelayed(this, CALL_WATCH_MS)
+        }
+    }
 
     /** Ease-out sliding in, ease-in sliding out — one shared pair so the panel's entrance and exit
      *  feel identical on every skin and every supported Android version (API 24–37). */
@@ -332,30 +375,90 @@ class OverlayController(
      * the old value. At the 40–150 ms cadence of a held key it loses that race nearly every time,
      * which silently suppressed the step haptic for the whole hold.
      */
-    fun adjustAndShow(direction: Int): Boolean {
+    /** The key-driven stream's volume as it stood when the current hold began, so [undoHold] can put
+     *  it back. Which stream that is depends on the call state at the hold's start — see [keyStream]
+     *  — so [holdStartStream] is snapshotted alongside it rather than re-derived on the way out. */
+    private var holdStartVolume: Int? = null
+    private var holdStartStream = AudioManager.STREAM_MUSIC
+
+    /** Snapshot the key-driven stream's volume before a fresh hold takes its first step. */
+    fun markHoldStart() {
+        holdStartStream = keyStream()
+        holdStartVolume =
+            runCatching { audioManager.getStreamVolume(holdStartStream) }.getOrNull()
+    }
+
+    /**
+     * Undo everything the current hold did — restore the media volume and take the panel away — for
+     * a press that turned out to be half of a system key chord (see [VolumeKeyService]).
+     *
+     * The snapshot is taken at the hold's *start*, not per step, so this reverses the whole ramp: a
+     * screenshot chord needs the keys held for around half a second, and our repeat begins stepping
+     * after 250 ms. Dismissal is the immediate [hide] rather than the animated one, since a sliding
+     * panel is far more likely to be caught in the capture than one that is simply gone.
+     */
+    fun undoHold(): Boolean {
+        val start = holdStartVolume ?: return false
+        holdStartVolume = null
+        runCatching { audioManager.setStreamVolume(holdStartStream, start, 0) }
+        hide()
+        return true
+    }
+
+    fun adjustAndShow(direction: Int, fromAutoRepeat: Boolean = false): Boolean {
         val dir = if (direction >= 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
-        val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val min = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
-        } else {
-            0
+        // In a call the keys move the call stream, exactly as they do on a stock device, and the
+        // panel they raise puts that stream under them as its main slider.
+        val stream = keyStream()
+        val before = audioManager.getStreamVolume(stream)
+        val max = audioManager.getStreamMaxVolume(stream)
+        val min = streamMin(stream)
+        // The booster only ever applies to media, so a call press skips it outright: it must neither
+        // claim the press nor invalidate a boost that is sitting on a media stream nobody just moved.
+        if (stream == AudioManager.STREAM_MUSIC) {
+            // The booster gets first refusal on the press, before the stream is touched. It only ever
+            // claims one while the stream is already pinned at maximum (raising) or a boost is applied
+            // (lowering); in both cases the write below would either do nothing or wrongly drop the real
+            // volume, so it must not run. Editors never touch real audio state, so they never ask.
+            if (!isEditor() && boostEnabled()) {
+                if (MediaBooster.handleKey(direction, before >= max, fromAutoRepeat) ==
+                    MediaBooster.Verdict.CONSUMED
+                ) {
+                    showOrRefreshPanel()
+                    // A boost notch is a real change, so the held-key step haptic fires as usual.
+                    return true
+                }
+            } else if (!isEditor()) {
+                MediaBooster.reset()
+            }
+            // Any move that leaves the stream below its maximum invalidates a boost sitting on top of it.
+            if (!isEditor()) MediaBooster.validate(before >= max && direction >= 0)
         }
+
         val changed = if (direction >= 0) before < max else before > min
         // No FLAG_SHOW_UI: we suppress the system panel and render our own instead.
-        runCatching { audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, 0) }
+        runCatching { audioManager.adjustStreamVolume(stream, dir, 0) }
         val slider = mediaSlider
         if (root != null && !dismissing && slider != null) {
             // Already visible: reflect the new level on the existing slider and keep the panel alive,
             // without re-rendering. Rebuilding on every key press makes the panel flicker and, in the
             // Sound sheet, resets the scroll position and re-queries the app list.
-            val steps = max.coerceAtLeast(1)
+            // Steps span min..max, not 0..max: the call stream's floor is 1 on nearly every device,
+            // so counting from zero there would make every key press a fraction of a real step out.
+            val steps = (max - min).coerceAtLeast(1)
             val currentStep = (slider.level * steps).roundToInt().coerceIn(0, steps)
             val nextStep = (currentStep + if (direction >= 0) 1 else -1).coerceIn(0, steps)
             slider.level = nextStep / steps.toFloat()
             // Reconcile with the system-reported level after the write to stay correct if the platform
             // clamps or ignores a step change.
-            slider.post { slider.level = streamLevel(AudioManager.STREAM_MUSIC) }
+            slider.post { slider.level = streamLevel(stream) }
+            // The other column of a call panel follows the stream these keys aren't moving, so
+            // reconcile it too: it can be changed from under us mid-call (an app ducking its own
+            // playback), and a key press is the one moment the panel is already updating itself.
+            val otherStream =
+                if (stream == AudioManager.STREAM_MUSIC) AudioManager.STREAM_VOICE_CALL
+                else AudioManager.STREAM_MUSIC
+            secondarySlider?.let { other -> other.post { other.level = streamLevel(otherStream) } }
             // The volume keys drive Media, so re-select it (Android 7–8): if the user had selected Ring
             // or an app row, a key press hands the highlight back to Media. No-op on other skins.
             if (generic78OrderedRows.isNotEmpty()) selectGenericRow(mediaSlider)
@@ -363,7 +466,69 @@ class OverlayController(
         } else {
             show()
         }
+        refreshBoost()
         return changed
+    }
+
+    /** Whether the booster may claim a press: switched on, and the device can actually apply gain. */
+    private fun boostEnabled(): Boolean =
+        prefs.isMediaBoostEnabled() &&
+            MediaBooster.availability != MediaBooster.Availability.UNAVAILABLE
+
+    /**
+     * Put the panel on screen, or keep an already-visible one alive, without touching the media
+     * slider's level — the boost sits *above* the stream, so the stream's own slider hasn't moved.
+     */
+    private fun showOrRefreshPanel() {
+        if (root != null && !dismissing && mediaSlider != null) {
+            if (generic78OrderedRows.isNotEmpty()) selectGenericRow(mediaSlider)
+            armAutoHide()
+            refreshBoost()
+        } else {
+            show()
+        }
+    }
+
+    /**
+     * Build the boost indicator and add it to [container] at [index], starting hidden.
+     *
+     * Every skin gets one. The obvious objection is pixel-accuracy — these panels are deliberate
+     * recreations of stock ones, and no stock panel has a boost bar — but the switch is off by
+     * default, so anyone who leaves it off keeps an untouched replica. A user who turns it on has
+     * asked for behaviour no stock panel has; showing it only on the modern skins would instead
+     * leave an Android 7–8 user with a switch that visibly does nothing.
+     */
+    private fun addBoostBar(container: ViewGroup, index: Int, vertical: Boolean, showLabel: Boolean) {
+        if (isEditor()) return
+        val bar = BoostBar(
+            context = context,
+            fillColor = style.accentColor,
+            trackColor = style.trackColor,
+            labelColor = style.textColor,
+            showLabel = showLabel,
+            vertical = vertical,
+        ).apply { visibility = View.GONE }
+        boostBar = bar
+        val lp = if (vertical) {
+            LinearLayout.LayoutParams(dp(18), dp(44)).apply { bottomMargin = dp(4) }
+        } else {
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(18),
+            ).apply { topMargin = dp(2); bottomMargin = dp(2) }
+        }
+        container.addView(bar, index, lp)
+        refreshBoost()
+    }
+
+    /** Push the current boost state onto the bar, if this panel is showing one. */
+    private fun refreshBoost() {
+        val bar = boostBar ?: return
+        val on = !isEditor() && boostEnabled() && MediaBooster.active
+        bar.visibility = if (on) View.VISIBLE else View.GONE
+        if (on) {
+            bar.fraction = MediaBooster.fraction
+            bar.percent = MediaBooster.percent
+        }
     }
 
     fun show() {
@@ -789,6 +954,7 @@ class OverlayController(
     fun hide() {
         hideFloatingButton(animate = false)
         handler.removeCallbacks(hideRunnable)
+        handler.removeCallbacks(callWatch)
         stopAppSync()
         loadJob?.cancel()
         panel?.animate()?.cancel()
@@ -800,6 +966,11 @@ class OverlayController(
         root = null
         panel = null
         mediaSlider = null
+        secondarySlider = null
+        callColumnSlider = null
+        mediaColumnSlider = null
+        legacyIconRefresh = null
+        boostBar = null
         ringerIcon = null
         ringerButtons = null
         // A fresh panel starts from the device's real ringer mode again.
@@ -819,10 +990,15 @@ class OverlayController(
         generic78ExtraRows = emptyList()
         generic78AppsBox = null
         generic78Selected = null
+        generic78ChevronCollapsed = null
+        generic78ChevronExpanded = null
         currentSig = null
         expanded = false // stock panel reopens collapsed
+        sheetCallOpen = false // and Android 16's call sheet reopens folded, on the call alone
         outputPicker = false
         ringerMenuOpen = false
+        // The call is what a fresh call panel highlights, whatever the last one was left on.
+        callFocusStream = AudioManager.STREAM_VOICE_CALL
         dismissing = false
     }
 
@@ -886,6 +1062,7 @@ class OverlayController(
         hideSheetBehindOutputEditor()
         if (entering && liveEdit == null) panel?.let { animateEntrance(it) }
         armAutoHide()
+        watchCallShape()
         if (liveEdit != null) reportPanelBounds()
     }
 
@@ -1154,6 +1331,7 @@ class OverlayController(
         if (view == null || dismissing) { if (view == null) hide(); return }
         dismissing = true
         handler.removeCallbacks(hideRunnable)
+        handler.removeCallbacks(callWatch)
         handler.removeCallbacks(appsSyncRunnable)
         loadJob?.cancel()
         val exit = exitOffset(view)
@@ -1163,6 +1341,26 @@ class OverlayController(
             .setDuration(SLIDE_OUT_MS)
             .withEndAction { hide() }
             .start()
+    }
+
+    /**
+     * Follow the call state for as long as the panel is up.
+     *
+     * Its shape is chosen when it is built ([callPanel]), and a key press on a panel already showing
+     * only refreshes levels rather than re-rendering — so without this, a call that begins or ends
+     * under an open panel would leave the wrong layout there until it was dismissed and raised again:
+     * a one-column panel through a call, or two columns and a "Calling on" card after one had hung up.
+     *
+     * Polled rather than driven by a callback because [AudioManager.OnModeChangedListener] arrived in
+     * API 31 and this has to work on every version the panel supports. A panel lives for seconds, so
+     * this costs a handful of checks per showing and stops the moment the panel goes away.
+     */
+    private fun watchCallShape() {
+        handler.removeCallbacks(callWatch)
+        // Editors report no call at all (see [callActive]), so there is nothing to follow there.
+        if (isEditor()) return
+        builtCallShape = callPanel()
+        handler.postDelayed(callWatch, CALL_WATCH_MS)
     }
 
     private fun armAutoHide() {
@@ -1205,13 +1403,96 @@ class OverlayController(
         curSkin() == OverlaySkin.ANDROID_13_14 && curIconSet() != IconSet.ANDROID_13
 
     /**
-     * The Android 15 media-output sheet (offered by the Android 13–15 skin): a redesigned "Sound &
-     * vibration" sheet with an "Audio will play on" output selector and filled-pill sliders, plus a
-     * media-output picker that shows the volume as a percentage while dragging. The collapsed panel is
-     * identical to Android 14.
+     * The Android 15 media-output sheet (offered by the Android 13–16 skin as "Android 15" or
+     * "Android 16"): a redesigned "Sound & vibration" sheet with an "Audio will play on" output
+     * selector and filled-pill sliders, plus a media-output picker that shows the volume as a
+     * percentage while dragging. The collapsed panel is identical to Android 14.
      */
     private fun isAndroid15Sheet() =
-        curSkin() == OverlaySkin.ANDROID_13_14 && curIconSet() == IconSet.ANDROID_15
+        curSkin() == OverlaySkin.ANDROID_13_14 && curIconSet().usesOutputSheet
+
+    /**
+     * The Android 16 style. Its panel and sheet are Android 15's in every state but one: during a call
+     * the sheet folds down to the Call row behind a chevron (see [callFoldRow]) and greys its
+     * "Calling on" card. Everything else — main panel, rows, picker, footer — is shared with 15.
+     */
+    private fun isAndroid16() =
+        curSkin() == OverlaySkin.ANDROID_13_14 && curIconSet() == IconSet.ANDROID_16
+
+    /**
+     * A call is in progress — see [inCall] for what counts as one.
+     *
+     * Editors always report false: a preview that reshaped itself because a call came in mid-edit
+     * would move the element out from under the user's finger.
+     */
+    private fun callActive(): Boolean = !isEditor() && audioManager.inCall()
+
+    /**
+     * Whether to draw the call-mode panel: the call stream takes over as the main slider and media
+     * moves to a second column beside it.
+     *
+     * Every style reshapes, each in the shape its own renderer allows. The Material You family (12,
+     * 13, 14, 15) grows a second card beside the main one; 9, 10 and 11 stand the two sliders side by
+     * side inside the one card they already have; Android 7–8, one list of full-width rows with
+     * nowhere to put a column, gives the call a *row* instead — in the Ring row's place, that bar
+     * being the one which already moves the call volume there (see [setStream]'s tieCall). Layout and
+     * the light/dark palette are shared within each family, each of them a single skin differing only
+     * in the icons split out elsewhere, so a call looks the same across 12–15 and across 9–11.
+     *
+     * That leaves nothing to exclude, so this now coincides with [callActive]; it keeps its own name
+     * because its callers are asking the other question — what to draw, not what the device is doing.
+     */
+    private fun callPanel(): Boolean = callActive()
+
+    /**
+     * The stream the hardware volume keys drive — the call stream while a call panel is up, which is
+     * what the keys do on a stock device in a call, and media the rest of the time.
+     *
+     * The styles differ once you touch a slider. Android 15 keeps the keys on the call however you
+     * fiddle with the media column, and Android 7–8 keeps them there for want of anywhere to send
+     * them — its call row replaces Ring in one list rather than standing beside media as a column;
+     * 9 through 14 hand them to whichever column you last touched, which on 14 is the same thing as
+     * the column it left on screen.
+     */
+    private fun keyStream(): Int = when {
+        !callPanel() -> AudioManager.STREAM_MUSIC
+        isAndroid15Sheet() || curSkin() == OverlaySkin.ANDROID_7_8 -> AudioManager.STREAM_VOICE_CALL
+        else -> callFocusStream
+    }
+
+    /**
+     * The finger has landed on one of a call panel's two columns: hand it the accent and drop the
+     * other to the inactive tone. Both columns stay on screen on every version that draws them.
+     *
+     * Stock Android 14 actually removes the column you didn't touch, leaving the one-column panel
+     * behind. That is deliberately not copied — losing the call slider mid-call is worse than the
+     * inconsistency of keeping it — so only the accent moves, as it does on Android 15. What 14 does
+     * keep is handing the keys over with it; see [keyStream].
+     */
+    private fun focusCallColumn(stream: Int) {
+        if (!callPanel() || callFocusStream == stream) return
+        callFocusStream = stream
+        applyCallFocus()
+    }
+
+    /** Paint both columns of a call panel for the current [callFocusStream], and point the key-driven
+     *  slider at whichever one the keys are now on. */
+    private fun applyCallFocus() {
+        val call = callColumnSlider ?: return
+        val media = mediaColumnSlider ?: return
+        val callFocused = callFocusStream != AudioManager.STREAM_MUSIC
+        call.fillOverride = if (callFocused) style.fillColor else inactiveFillColor()
+        media.fillOverride = if (callFocused) inactiveFillColor() else style.fillColor
+        // On Android 14 the keys follow the accent, so the slider a key press updates in place has to
+        // follow it too; on Android 15 they never leave the call and this settles on the same pair it
+        // was built with.
+        val keyed = if (keyStream() == AudioManager.STREAM_MUSIC) media else call
+        mediaSlider = keyed
+        secondarySlider = if (keyed === call) media else call
+        // The Android 9-11 panel carries its stream icons under the sliders rather than inside them,
+        // and they mark the focus too; no-op on every other panel.
+        legacyIconRefresh?.invoke()
+    }
 
     private fun hideSecondaryIconsLegacy910() =
         curSkin() == OverlaySkin.ANDROID_9_11 &&
@@ -1427,6 +1708,10 @@ class OverlayController(
 
     private fun populate(container: ViewGroup) {
         mediaSlider = null // each path re-captures the live media slider it builds
+        secondarySlider = null
+        callColumnSlider = null
+        mediaColumnSlider = null
+        legacyIconRefresh = null
         ringerIcon = null
         ringerButtons = null
         genericRingSlider = null
@@ -1490,21 +1775,57 @@ class OverlayController(
         // shows/hides around it; instead it floats over the trailing space every row already reserves
         // for a chevron (see [makeSlider]'s `reserveTrailing`), so it adds no extra height of its own.
         // Media (icon-only, no chevron of its own) is what stays visible collapsed since that's the
-        // row the hardware volume keys drive.
+        // row the hardware volume keys drive — until a call, when the Call row takes that place and,
+        // on Android 8, the chevron along with it.
         val seven = isSeven()
+        val callMode = callPanel()
         val toggle = if (seven) GenericChevronToggle().also { it.dir = if (expanded) ChevronDir.UP else ChevronDir.DOWN } else null
         genericToggle = toggle
+        // Android 8 hangs its chevron on whichever row leads, since that is the one a collapse leaves
+        // on screen; Android 7 floats its own toggle instead, so no row carries one there.
+        val leadChevron = if (seven) ChevronDir.NONE else (if (expanded) ChevronDir.UP else ChevronDir.DOWN)
 
         val media = streamSlider(
             AudioManager.STREAM_MUSIC,
             tintedIcon(R.drawable.ic_stream_media),
             null,
             if (seven) null else "Media",
-            if (seven) ChevronDir.NONE else (if (expanded) ChevronDir.UP else ChevronDir.DOWN),
+            if (callMode) ChevronDir.NONE else leadChevron,
             // The Nougat/Oreo muted note (the glyph is cut along the slash), not the modern overlay.
             mutedIcon = tintedIcon(R.drawable.ic_stream_media_off_78),
         ) { toggleExpand() }
-        mediaSlider = media
+
+        // A call gets a row here rather than a column — this panel is one list of full-width bars,
+        // with nowhere to stand a second slider. Captured from a stock Android 8 AVD mid-call: the row
+        // is appended to the *end* of the list (Media / Ring / Alarm / Call), not promoted to the top,
+        // and it is the row a collapse leaves on screen because it is the stream in play. Ring stays
+        // where it is and keeps its own level — the reference shows the two at different positions,
+        // so the lock-step [setStream] normally gives them here is dropped for the call's duration.
+        val call = if (!callMode) null else streamSlider(
+            AudioManager.STREAM_VOICE_CALL,
+            tintedIcon(R.drawable.ic_stream_call),
+            null,
+            // "Call" is the stock label, and the short form its siblings already use rather than the
+            // sheet's "Call volume". Untranslated exactly as Media/Ring/Alarm are; localise together.
+            if (seven) null else "Call",
+            // Placed by [applyGenericChevron], which puts it on the topmost visible row.
+            ChevronDir.NONE,
+            // No muted icon: the call stream's floor is 1 on nearly every device (see [streamMin]), so
+            // it never reaches the state a crossed-out glyph exists to show.
+        ) { toggleExpand() }
+
+        // [mediaSlider] is the slider the keys drive, which in a call is the call row; media becomes
+        // the secondary the key handler reconciles beside it, since it can move under us mid-call.
+        mediaSlider = call ?: media
+        secondarySlider = if (call != null) media else null
+        // A full-width bar above the Media row. This panel stacks its rows horizontally when the
+        // sliders are vertical, in which case the bar goes alongside them rather than above.
+        addBoostBar(
+            content,
+            index = 0,
+            vertical = style.orientation == SliderOrientation.VERTICAL,
+            showLabel = style.orientation != SliderOrientation.VERTICAL,
+        )
 
         val ring = streamSlider(
             AudioManager.STREAM_RING,
@@ -1514,7 +1835,10 @@ class OverlayController(
             ChevronDir.NONE,
             mutedIcon = tintedIcon(R.drawable.ic_ring_off),
             tieNotification = true,
-            tieCall = true,
+            // Ring folds the call volume into itself on this panel — but only while the call has no
+            // row of its own. With the Call row up they are two separate bars at two separate levels
+            // in the reference, so the tie would drag a slider the user can see.
+            tieCall = !callMode,
             afterChange = { refreshAlarmsOnlyFooter() },
         ) {}
         genericRingSlider = ring
@@ -1532,9 +1856,21 @@ class OverlayController(
         // they load asynchronously.
         val appsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
-        // Rows added in expanded display order (Ring, Media, Alarm on Android 7); the collapsed
-        // state just hides everything but Media.
-        val streamRows = if (seven) listOf(ring, media, alarm) else listOf(media, ring, alarm)
+        // Rows in expanded display order (Ring, Media, Alarm on Android 7), with a call's row appended
+        // to the end as the reference has it.
+        val streamRows = listOfNotNull(
+            if (seven) ring else media,
+            if (seven) media else ring,
+            alarm,
+            call,
+        )
+        // The row a collapse leaves on screen, and the one selected on open: the one the keys drive,
+        // which during a call is the Call row wherever it sits in the list above.
+        val lead = call ?: media
+        // Android 8's chevron belongs to the topmost visible row, which those two rows are: the same
+        // row off a call (Media leads and is all a collapse leaves), two different ones during it.
+        generic78ChevronExpanded = if (seven) null else streamRows.first()
+        generic78ChevronCollapsed = if (seven) null else lead
         // Touching a row selects it: it stays highlighted and the rest stay greyed until another row
         // is selected (the greyed state persists past finger-lift, unlike the stock panel's momentary dim).
         streamRows.forEach { s -> s.onDragStateChange = { dragging -> if (dragging) selectGenericRow(s) } }
@@ -1564,10 +1900,11 @@ class OverlayController(
         }
 
         generic78OrderedRows = streamRows + appsBox
-        generic78ExtraRows = streamRows.filter { it !== media } + appsBox
+        generic78ExtraRows = streamRows.filter { it !== lead } + appsBox
         generic78AppsBox = appsBox
-        // Media is selected by default — the panel opens from the volume keys, which drive Media.
-        selectGenericRow(media)
+        // The lead row is selected by default — the panel opens from the volume keys, and that is the
+        // row they drive.
+        selectGenericRow(lead)
         applyGenericExpandState()
         refreshAlarmsOnlyFooter()
     }
@@ -1619,6 +1956,7 @@ class OverlayController(
             mediaSlider?.visibility = View.VISIBLE
             refreshAlarmsOnlyFooter()
         }
+        applyGenericChevron()
         // The first visible row sits flush; every later visible row gets the inter-row gap.
         var seenVisible = false
         generic78OrderedRows.forEach { row ->
@@ -1636,6 +1974,22 @@ class OverlayController(
             loadJob?.cancel()
             box?.removeAllViews()
         }
+    }
+
+    /**
+     * Put the Android 8 expand chevron on the topmost visible row for the current [expanded] state,
+     * clearing the other's. Off a call both are the same row and this is a no-op after the first
+     * pass; in a call the collapsed panel shows Call, which sits at the foot of the expanded list, so
+     * the chevron moves between the two as the panel opens and closes — as it does on stock. Android
+     * 7 floats its own toggle instead and leaves both null, so this does nothing there.
+     */
+    private fun applyGenericChevron() {
+        val collapsedRow = generic78ChevronCollapsed ?: return
+        val expandedRow = generic78ChevronExpanded ?: return
+        val carries = if (expanded) expandedRow else collapsedRow
+        val givesUp = if (expanded) collapsedRow else expandedRow
+        if (givesUp !== carries) givesUp.chevronDir = ChevronDir.NONE
+        carries.chevronDir = if (expanded) ChevronDir.UP else ChevronDir.DOWN
     }
 
     /**
@@ -1751,8 +2105,10 @@ class OverlayController(
         // LayoutTransition animates the expand/collapse (rebuilding would hard-swap and flicker).
         expanded = !expanded
         val dir = if (expanded) ChevronDir.UP else ChevronDir.DOWN
-        // Android 7's chevron lives on its own pinned header; Android 8's lives on the Media row.
-        genericToggle?.let { it.dir = dir } ?: run { mediaSlider?.chevronDir = dir }
+        // Android 7's chevron lives on its own pinned header; Android 8's rides a row, and which row
+        // that is can change with the state — [applyGenericChevron], reached through the call below,
+        // is what places it.
+        genericToggle?.let { it.dir = dir }
         applyGenericExpandState()
         armAutoHide()
     }
@@ -1820,11 +2176,14 @@ class OverlayController(
         }
         loadJob?.cancel()
         container.removeAllViews()
-        // Card wide enough to hold the slider (its thickness) plus breathing room.
-        val cardW = maxOf(dp(54), dp(style.pillThicknessDp) + dp(24))
+        // A column wide enough to hold the slider (its thickness) plus breathing room. In a call the
+        // card carries two of them side by side — media beside the call — which is how Android 9, 10
+        // and 11 all show a call, rather than the separate second card the 13–15 panels grow.
+        val callMode = callPanel()
+        val colW = maxOf(dp(54), dp(style.pillThicknessDp) + dp(24))
         val corner = dp(style.containerCornerDp).toFloat()
 
-        // Ringer-mode button (its own card): Android 9–11 cycles normal → vibrate → silent. The icon
+        // Ringer-mode button (its own card): Android 9–11 cycles normal -> vibrate -> silent. The icon
         // follows the editable icon tint so recolouring "icons" visibly affects it (the real panel used
         // an accent tint here, but tying it to the icon colour makes that control meaningful). On the
         // Android 13–15 skin the "Active mode icon" override (modeIconColor), when set, wins instead.
@@ -1844,43 +2203,99 @@ class OverlayController(
         refreshRingerViews()
         container.addView(
             ring,
-            LinearLayout.LayoutParams(cardW, cardW).apply { bottomMargin = dp(style.spacingDp) },
+            LinearLayout.LayoutParams(colW, colW).apply { bottomMargin = dp(style.spacingDp) },
         )
 
-        // Slider card: vertical media slider + media icon + divider + tune footer.
+        // Slider card: the stream column(s) + divider + tune footer.
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             background = roundedBg(style.containerColor, corner)
         }
 
-        val media = ImageView(context).apply {
-            val p = dp(10); setPadding(p, p, p, p)
-        }
-        // The media note under the slider follows the icon tint, or the "Media note icon" override
-        // (mediaIconColor) when the Android 13–15 skin sets one.
-        val mediaTint = style.mediaIconColor ?: style.iconTint
-        val refreshMediaIcon = { level: Float ->
-            val iconRes = if (level <= 0.001f) mediaMutedIconRes() else mediaIconRes()
-            media.setImageDrawable(tintedIcon(iconRes, mediaTint))
-        }
-        val slider = makeSlider(
+        val mediaIcon = ImageView(context).apply { val p = dp(10); setPadding(p, p, p, p) }
+        val callIcon = ImageView(context).apply { val p = dp(10); setPadding(p, p, p, p) }
+
+        val media = makeSlider(
             icon = null, glyph = null, label = null, chevron = ChevronDir.NONE, onChevron = {},
             orientation = SliderOrientation.VERTICAL, fill = true, reserveTrailing = false,
         ) { level ->
             val applied = setStream(AudioManager.STREAM_MUSIC, level)
-            refreshMediaIcon(applied)
+            legacyIconRefresh?.invoke()
             applied
         }
             .apply { level = streamLevel(AudioManager.STREAM_MUSIC) }
-        mediaSlider = slider
-        refreshMediaIcon(slider.level)
-        card.addView(
-            slider,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(155)).apply { topMargin = dp(12) },
-        )
 
-        card.addView(media, iconRowParams())
+        // The icons under the sliders carry the focus on a call panel: the column being adjusted takes
+        // the accent and the other the icon grey, which is how the stock call panel marks them. With
+        // no call there is nothing to contrast against, so media keeps the editable icon tint it has
+        // always had here (the real panel accents that one too — see the ringer note above).
+        legacyIconRefresh = {
+            val onMedia = !callMode || callFocusStream == AudioManager.STREAM_MUSIC
+            val mediaRes = if (media.level <= 0.001f) mediaMutedIconRes() else mediaIconRes()
+            val mediaTint = when {
+                !callMode -> style.mediaIconColor ?: style.iconTint
+                onMedia -> style.accentColor
+                else -> inactiveIconColor()
+            }
+            mediaIcon.setImageDrawable(tintedIcon(mediaRes, mediaTint))
+            if (callMode) {
+                val callTint = if (onMedia) inactiveIconColor() else style.accentColor
+                callIcon.setImageDrawable(tintedIcon(R.drawable.ic_stream_call, callTint))
+            }
+        }
+
+        // Above the media slider, so the boost reads as sitting on top of it.
+        addBoostBar(card, index = 0, vertical = true, showLabel = false)
+
+        if (callMode) {
+            val call = makeSlider(
+                icon = null, glyph = null, label = null, chevron = ChevronDir.NONE, onChevron = {},
+                orientation = SliderOrientation.VERTICAL, fill = true, reserveTrailing = false,
+            ) { level -> setStream(AudioManager.STREAM_VOICE_CALL, level) }
+                .apply {
+                    level = streamLevel(AudioManager.STREAM_VOICE_CALL)
+                    onDragStateChange = { dragging ->
+                        if (dragging) focusCallColumn(AudioManager.STREAM_VOICE_CALL)
+                        else level = streamLevel(AudioManager.STREAM_VOICE_CALL)
+                    }
+                }
+            media.onDragStateChange = { dragging ->
+                if (dragging) focusCallColumn(AudioManager.STREAM_MUSIC)
+                else media.level = streamLevel(AudioManager.STREAM_MUSIC)
+            }
+            val columns = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            columns.addView(
+                legacyColumn(media, mediaIcon),
+                LinearLayout.LayoutParams(colW, LinearLayout.LayoutParams.WRAP_CONTENT),
+            )
+            columns.addView(
+                legacyColumn(call, callIcon),
+                LinearLayout.LayoutParams(colW, LinearLayout.LayoutParams.WRAP_CONTENT),
+            )
+            card.addView(
+                columns,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            mediaColumnSlider = media
+            callColumnSlider = call
+            // Opens on the call, like the stock panel; applyCallFocus paints both and points the keys.
+            mediaSlider = call
+            secondarySlider = media
+            applyCallFocus()
+        } else {
+            mediaSlider = media
+            card.addView(
+                media,
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(155))
+                    .apply { topMargin = dp(12) },
+            )
+            card.addView(mediaIcon, iconRowParams())
+        }
+        legacyIconRefresh?.invoke()
 
         card.addView(
             View(context).apply { setBackgroundColor(style.trackColor) },
@@ -1900,7 +2315,24 @@ class OverlayController(
         }
         card.addView(tune, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        container.addView(card, LinearLayout.LayoutParams(cardW, LinearLayout.LayoutParams.WRAP_CONTENT))
+        container.addView(
+            card,
+            LinearLayout.LayoutParams(if (callMode) colW * 2 else colW, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+    }
+
+    /** One column of the Android 9–11 slider card: the vertical slider with its stream's icon under
+     *  it. A call panel stands two of these side by side; the ordinary panel builds neither, adding
+     *  its single slider and icon to the card directly. */
+    private fun legacyColumn(slider: VolumeSlider, icon: ImageView) = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        addView(
+            slider,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(155))
+                .apply { topMargin = dp(12) },
+        )
+        addView(icon, iconRowParams())
     }
 
     private fun iconRowParams() =
@@ -1955,6 +2387,9 @@ class OverlayController(
             // The sheet rows use the outlined icon set (hollow-head note, hollow handset, outlined
             // bell) across Android 11–14; 9 and 10 hide the row icons entirely.
             addStreamRow911(rows, R.drawable.ic_stream_media_outline, strings.panelRowMedia, AudioManager.STREAM_MUSIC)
+            // Directly under Media, which is what the volume keys still drive while this sheet is open —
+            // without it a press at maximum would do nothing visible at all.
+            addBoostBar(rows, index = rows.childCount, vertical = false, showLabel = true)
             addStreamRow911(rows, R.drawable.ic_stream_call_outline, strings.panelRowCall, AudioManager.STREAM_VOICE_CALL)
             if (isModernSheet() && isAndroid14IconSet()) {
                 // Android 14 draws Ring as the ringing handset; unlike Media it keeps that icon even
@@ -2050,7 +2485,10 @@ class OverlayController(
         }
             .apply { level = streamLevel(streamType) }
         refreshIcon(slider.level)
-        if (streamType == AudioManager.STREAM_MUSIC) mediaSlider = slider
+        // Whichever row the keys drive is the one a key press updates in place — the Call row while
+        // a call panel is up (Android 14), the Media row otherwise.
+        if (streamType == keyStream()) mediaSlider = slider
+        else if (streamType == AudioManager.STREAM_MUSIC) secondarySlider = slider
         val row = row911(icon, label, slider)
         container.addView(row)
         if (!isModernSheet()) addDivider(container)
@@ -2259,21 +2697,45 @@ class OverlayController(
             setPadding(dp(16), dp(10), dp(16), 0)
         }
         val onlyMixing = prefs.isOnlyVolumeMixingEnabled() && preview == null
+        val foldCall = !onlyMixing && callPanel() && isAndroid16()
+        val body = if (!foldCall) rows else LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (sheetCallOpen) View.VISIBLE else View.GONE
+        }
+        val callPill = if (!foldCall) null
+        else makePillSlider(R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
+
         if (!onlyMixing) {
             rows.addView(
                 outputCard(),
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                     .apply { bottomMargin = dp(12) },
             )
+            if (callPill != null) {
+                rows.addView(
+                    callFoldRow(callPill, body),
+                    pillRowParams().apply { height = LinearLayout.LayoutParams.WRAP_CONTENT },
+                )
+                rows.addView(
+                    body,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+            }
 
             // Media keeps the note icon, switching only to Android 15's crossed speaker at mute.
-            addPillRow(rows, R.drawable.ic_stream_media, "Media", AudioManager.STREAM_MUSIC, mutedIconRes = R.drawable.ic_ring_megaphone_off)
-            addPillRow(rows, R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
+            addPillRow(body, R.drawable.ic_stream_media, "Media", AudioManager.STREAM_MUSIC, mutedIconRes = R.drawable.ic_ring_megaphone_off)
+            // Under Media, which the volume keys still drive while this sheet is open.
+            addBoostBar(body, index = body.childCount, vertical = false, showLabel = true)
+            // 16 has already placed the call at the top; 15 keeps it here, second.
+            if (!foldCall) addPillRow(rows, R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
             // Ring swaps to the vibrate icon at zero; muting it makes Notification unavailable live;
             // raising it back
             // restores the Notification slider — matching the OS's linked ring/notification behaviour.
             addPillRow(
-                rows, R.drawable.ic_stream_ring_phone, "Ring", AudioManager.STREAM_RING,
+                body, R.drawable.ic_stream_ring_phone, "Ring", AudioManager.STREAM_RING,
                 mutedIconRes = R.drawable.ic_ring_vibrate,
                 afterChange = { refreshNotificationAvailability() },
             )
@@ -2284,15 +2746,22 @@ class OverlayController(
             notifSlider = notif
             notifSliderRow = notif
             notifDisabledRow = notifDisabled
-            rows.addView(notif, pillRowParams())
-            rows.addView(notifDisabled, pillRowParams())
+            body.addView(notif, pillRowParams())
+            body.addView(notifDisabled, pillRowParams())
             refreshNotificationAvailability()
-            addPillRow(rows, R.drawable.ic_stream_alarm, "Alarm", AudioManager.STREAM_ALARM)
+            addPillRow(body, R.drawable.ic_stream_alarm, "Alarm", AudioManager.STREAM_ALARM)
         }
 
         val appsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        rows.addView(appsBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        body.addView(appsBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         loadPillRowApps(appsBox)
+        if (callPill != null) {
+            // The keys are on the call while this sheet is up, and [mediaSlider] is by convention the
+            // slider a key press moves, so the call pill takes that role and the Media row — captured
+            // there by [makePillSlider] — becomes the secondary the handler reconciles beside it.
+            secondarySlider = mediaSlider
+            mediaSlider = callPill
+        }
 
         container.addView(
             cappedScroll(rows),
@@ -2327,6 +2796,12 @@ class OverlayController(
     /** The "Audio will play on / <output>" card that opens the media-output picker. Its surface is
      *  independently editable (outputSurfaceColor), separate from the DONE pill's own surface. */
     private fun outputCard(): View {
+        val callMode = callPanel()
+        // Android 16 gives the calling card a grey icon chip where 15 uses its slate one; sampled from
+        // a stock Android 16 panel mid-call. The card's own grey surface arrives with the sheet palette
+        // (see [withAndroid16CallCard]), since that palette always pins an output surface of its own.
+        val chip16 = if (!(callMode && isAndroid16())) null
+        else if (isDark()) Color.parseColor("#FF8F909A") else Color.parseColor("#FF757780")
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -2337,12 +2812,15 @@ class OverlayController(
                 // In live-edit a tap only recolours this card (resolved as OUTPUT_SURFACE) — the picker
                 // is edited on its own via the bar's "Output" switch, so opening it here would fight the
                 // editor. On the real overlay it opens the media-output picker as normal.
+                // In a call the card names the call's own output, which is not the media-output
+                // picker's to change, so it stays inert until that picker learns about call routing.
+                if (callMode) return@setOnClickListener
                 if (liveEdit == null && preview == null) { armAutoHide(); openOutputPicker() }
             }
         }.tagColor(EditableColor.OUTPUT_SURFACE)
         val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         col.addView(TextView(context).apply {
-            text = strings.panelAudioWillPlayOn
+            text = if (callMode) strings.panelCallingOn else strings.panelAudioWillPlayOn
             setTextColor(style.iconTint)
             textSize = 12f
         })
@@ -2353,12 +2831,51 @@ class OverlayController(
             setTypeface(typeface, Typeface.BOLD)
         })
         card.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        // The call card carries its device icon in a filled 48dp chip, as the system's does; the
+        // media card leaves the same icon bare. The chip is the icon colour with the icon inverted
+        // out of it, which is how the reference reads in both themes: a slate chip with a white
+        // glyph in light, a pale chip with a dark one in dark.
         card.addView(
-            ImageView(context).apply { setImageDrawable(tintedIcon(R.drawable.ic_phone_device)) },
-            LinearLayout.LayoutParams(dp(24), dp(24)),
+            ImageView(context).apply {
+                if (callMode) {
+                    val chip = chip16 ?: style.iconTint
+                    setImageDrawable(tintedIcon(R.drawable.ic_phone_device, contrastOn(chip)))
+                    background = roundedBg(chip, dp(16).toFloat())
+                    val p = dp(12)
+                    setPadding(p, p, p, p)
+                } else {
+                    setImageDrawable(tintedIcon(R.drawable.ic_phone_device))
+                }
+            },
+            if (callMode) LinearLayout.LayoutParams(dp(48), dp(48))
+            else LinearLayout.LayoutParams(dp(24), dp(24)),
         )
         return card
     }
+
+    /**
+     * The fill for a slider showing a stream nothing is adjusting — the media column beside a call.
+     *
+     * Android 9–11 greys it out, which is the panel's own inactive grey and exactly what its stock
+     * call panel draws. Android 12–15 tints it instead: the secondary container in light, a pale
+     * wash of the accent, as its reference does. In dark that same reference keeps the pale fill,
+     * which in a dark palette *is* the accent — so the accent is what this returns there, rather
+     * than the dark secondary container, which would leave the column looking empty instead of
+     * merely quieter.
+     */
+    private fun inactiveFillColor(): Int = when {
+        isDark() -> style.fillColor
+        curSkin() == OverlaySkin.ANDROID_9_11 -> style.inactiveColor
+        else -> style.secondaryContainerColor
+    }
+
+    /**
+     * The icon tint for the column a call panel is *not* focused on, where that panel draws its icons
+     * outside the slider (Android 9–11). The icon grey in light, which is what its stock call panel
+     * greys the unfocused column down to; the accent in dark, where that same panel leaves both
+     * columns in the accent and draws no distinction at all.
+     */
+    private fun inactiveIconColor(): Int = if (isDark()) style.accentColor else style.iconTint
 
     private fun pillRowParams() =
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { bottomMargin = dp(10) }
@@ -2387,8 +2904,50 @@ class OverlayController(
                 onDragStateChange = { dragging -> if (!dragging) level = streamLevel(streamType) }
                 level = streamLevel(streamType)
             }
-        if (streamType == AudioManager.STREAM_MUSIC) mediaSlider = slider
+        // The keys drive the call row while a call is up and the media row otherwise; whichever it is
+        // becomes the slider a key press updates in place, and media parks in [secondarySlider].
+        if (streamType == keyStream()) mediaSlider = slider
+        else if (streamType == AudioManager.STREAM_MUSIC) secondarySlider = slider
         return slider
+    }
+
+    /**
+     * Android 16's call row: the Call pill, and beside it the round chevron that folds [body] — every
+     * other stream — in and out. Sampled from a stock Android 16 sheet mid-call, which opens on this
+     * row alone with the chevron pointing *up*, and turns it down once the rest are showing.
+     *
+     * The fold is toggled in place rather than by rebuilding the sheet: a rebuild would cancel the
+     * app-sync load, drop the scroll position and re-query the app list, all to hide four rows.
+     */
+    private fun callFoldRow(callPill: VolumeSlider, body: View): View {
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(callPill, LinearLayout.LayoutParams(0, dp(52), 1f))
+        val chevron = ImageView(context).apply {
+            // The disc is the pill fill, which is what stock draws it in (#495D92 light / #B2C5FF dark,
+            // the same colour the rows fill with) — not [accentColor], which this sheet pins to its
+            // near-black label colour so the SETTINGS pill can read it.
+            background = ovalBg(style.fillColor)
+            val p = dp(15); setPadding(p, p, p, p)
+            fun paint() = setImageDrawable(
+                tintedIcon(
+                    if (sheetCallOpen) R.drawable.ic_expand_down else R.drawable.ic_expand_up,
+                    contrastOn(style.fillColor),
+                ),
+            )
+            paint()
+            setOnClickListener {
+                if (isEditor()) return@setOnClickListener // visual-only preview
+                armAutoHide() // interacting keeps the panel alive
+                sheetCallOpen = !sheetCallOpen
+                body.visibility = if (sheetCallOpen) View.VISIBLE else View.GONE
+                paint()
+            }
+        }
+        row.addView(chevron, LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginStart = dp(10) })
+        return row
     }
 
     private fun addPillRow(
@@ -2596,6 +3155,8 @@ class OverlayController(
             chevron = ChevronDir.NONE, onChevron = {},
             orientation = SliderOrientation.HORIZONTAL, fill = true, reserveTrailing = false,
             render = SliderRender.PILL_LABEL, percentWhileDragging = true,
+            // Android 16's picker pill carries the trailing dot; Android 15's is bare.
+            showDot = isAndroid16(),
             // Straight (flat) fill edge, while the outer pill keeps its rounded corners.
             squareFill = true,
             mutedIcon = tintedIcon(R.drawable.ic_speaker_off),
@@ -2804,27 +3365,43 @@ class OverlayController(
         ringerButtons = modeButtons
         refreshRingerViews()
 
-        // Thin-track media slider with a wide rounded fill capsule; the note rides inside the capsule
-        // (tinted on-accent so it reads against the fill).
+        // Thin-track slider with a wide rounded fill capsule; the icon rides inside the capsule
+        // (tinted on-accent so it reads against the fill). In a call this card carries the *call*
+        // stream — the one the keys now move — and media moves out to its own column beside it.
+        val callMode = callPanel()
+        val mainStream = keyStream()
         lateinit var slider: VolumeSlider
-        // The note rides inside the accent-filled capsule, so by default it's tinted to contrast the
+        // The icon rides inside the accent-filled capsule, so by default it's tinted to contrast the
         // *fill* — an automatic on-fill colour, so recolouring background/fill never drags it. A user
         // "Media note icon" override (style.mediaIconColor) pins it to an exact colour instead.
         val onFill = style.mediaIconColor ?: contrastOn(style.fillColor)
         slider = makeSlider(
-            icon = tintedIcon(R.drawable.ic_stream_media, onFill),
+            icon = tintedIcon(
+                if (mainStream == AudioManager.STREAM_VOICE_CALL) R.drawable.ic_stream_call
+                else R.drawable.ic_stream_media,
+                onFill,
+            ),
             glyph = null, label = null, chevron = ChevronDir.NONE, onChevron = {},
             orientation = SliderOrientation.VERTICAL, fill = true, reserveTrailing = false,
-            mutedIcon = tintedIcon(R.drawable.ic_stream_media_off, onFill),
+            // No muted icon for the call stream: its floor is 1 on nearly every device, so it never
+            // reaches the muted state the crossed-out glyph exists to show.
+            mutedIcon = if (mainStream == AudioManager.STREAM_VOICE_CALL) null
+            else tintedIcon(R.drawable.ic_stream_media_off, onFill),
             // Android 15 gives the media slider a full-width shaped pill background (the track color)
             // rather than the thin centre stick Android 12–14 keep.
             capsuleFullTrack = isAndroid15Sheet(),
-        ) { level -> setStream(AudioManager.STREAM_MUSIC, level) }
+            // Android 12-14's stick has its own colour, darker than the track grey the sheet rows use;
+            // Android 15 has no stick (its track is the full pill) and keeps trackColor.
+            pickerTrackColor = if (isAndroid15Sheet()) null else style.capsuleStickColor,
+        ) { level -> setStream(mainStream, level) }
             .apply {
-                onDragStateChange = { dragging -> if (!dragging) level = streamLevel(AudioManager.STREAM_MUSIC) }
-                level = streamLevel(AudioManager.STREAM_MUSIC)
+                onDragStateChange = { dragging ->
+                    if (dragging) focusCallColumn(mainStream) else level = streamLevel(mainStream)
+                }
+                level = streamLevel(mainStream)
             }
         mediaSlider = slider
+        if (callMode) callColumnSlider = slider
         card.addView(
             slider,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(188)).apply { topMargin = dp(30) },
@@ -2839,7 +3416,99 @@ class OverlayController(
         }.tagColor(EditableColor.OVERFLOW)
         card.addView(more, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        container.addView(card, LinearLayout.LayoutParams(cardW, LinearLayout.LayoutParams.WRAP_CONTENT))
+        if (!callMode) {
+            // Above everything, so the boost reads as sitting on top of the media capsule below it. The
+            // card's LayoutTransition animates it in and out, and the window resizes with it.
+            addBoostBar(card, index = 0, vertical = true, showLabel = false)
+            container.addView(card, LinearLayout.LayoutParams(cardW, LinearLayout.LayoutParams.WRAP_CONTENT))
+            return
+        }
+
+        // Call mode: media keeps a column of its own to the left of the call card, which is what the
+        // system panel does whenever a second stream is in play. The row is bottom-aligned and the
+        // media card lifted off that edge so the two sliders line up.
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+        }
+        val mediaCard = mediaColumnCard(corner)
+        // The boost sits over media, not over the call, so it rides the media column here — where the
+        // stream it applies to actually is.
+        addBoostBar(mediaCard, index = 0, vertical = true, showLabel = false)
+        row.addView(
+            mediaCard,
+            LinearLayout.LayoutParams(cardW, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                // 7dp, not the skin's own 10dp spacing: the stock panel leaves 18px between the two
+                // cards on a 420dpi reference device, measured off an Android 13 AVD in a call.
+                marginEnd = dp(7)
+                // Everything the call card carries below its own slider — the three-dot overflow, a
+                // 24dp icon inside its 10/12dp padding — less this card's own bottom padding. Aligning
+                // on the bottom rather than the top is what keeps the two sliders level when the ringer
+                // menu opens, since that grows the call card upwards.
+                bottomMargin = dp(24) + dp(10) + dp(12) - dp(8)
+            },
+        )
+        row.addView(card, LinearLayout.LayoutParams(cardW, LinearLayout.LayoutParams.WRAP_CONTENT))
+        // Both columns exist now, so the focused one can take the accent.
+        applyCallFocus()
+        container.addView(
+            row,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+    }
+
+    /**
+     * The media column a call-mode panel grows beside the call one: the same card and the same
+     * slider, with no ringer button and no overflow — just the stream, exactly as the system panel
+     * draws a second stream that is in play. Captured as [secondarySlider] rather than [mediaSlider],
+     * because the volume keys are driving the call stream while this is on screen.
+     */
+    private fun mediaColumnCard(corner: Float): LinearLayout {
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedBg(style.containerColor, corner)
+            // Asymmetric on purpose. The stock card reserves far more room above its slider than
+            // below — 75px against 18px on the 420dpi Android 13 AVD this was measured from, so ~28dp
+            // over ~7dp — which is what lifts the media pill's crown clear of the track while its foot
+            // stays tight to it. The row is bottom-aligned, so the extra top padding grows the card
+            // upwards and leaves the two sliders level with each other (as stock has them).
+            setPadding(0, dp(30), 0, dp(8))
+            // Matches the call card, so the boost bar animates in and out the same way here.
+            layoutTransition = LayoutTransition().apply {
+                enableTransitionType(LayoutTransition.CHANGING)
+                setDuration(170)
+            }
+        }
+        val onFill = style.mediaIconColor ?: contrastOn(style.fillColor)
+        val slider = makeSlider(
+            icon = tintedIcon(R.drawable.ic_stream_media, onFill),
+            glyph = null, label = null, chevron = ChevronDir.NONE, onChevron = {},
+            orientation = SliderOrientation.VERTICAL, fill = true, reserveTrailing = false,
+            mutedIcon = tintedIcon(R.drawable.ic_stream_media_off, onFill),
+            capsuleFullTrack = isAndroid15Sheet(),
+            // Opens as the column that isn't focused, which Android 15 marks by filling it in the
+            // softer secondary tone rather than the accent. Touching it swaps the two over, live.
+            // Its icon is passed in already tinted for the accent and stays that way through the
+            // swap, exactly as the reference does — the note stays white over the pale fill rather
+            // than flipping dark to contrast it.
+            pickerFillColor = inactiveFillColor(),
+            pickerTrackColor = if (isAndroid15Sheet()) null else style.capsuleStickColor,
+        ) { level -> setStream(AudioManager.STREAM_MUSIC, level) }
+            .apply {
+                onDragStateChange = { dragging ->
+                    if (dragging) focusCallColumn(AudioManager.STREAM_MUSIC)
+                    else level = streamLevel(AudioManager.STREAM_MUSIC)
+                }
+                level = streamLevel(AudioManager.STREAM_MUSIC)
+            }
+        secondarySlider = slider
+        mediaColumnSlider = slider
+        card.addView(slider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(188)))
+        return card
     }
 
     /**
@@ -3013,6 +3682,7 @@ class OverlayController(
         orientation: SliderOrientation = style.orientation,
         fill: Boolean = style.stretch,
         reserveTrailing: Boolean = style.render == SliderRender.LINE_THUMB,
+        showDot: Boolean = true,
         render: SliderRender = style.render,
         capsuleFullTrack: Boolean = false,
         squareFill: Boolean = false,
@@ -3041,6 +3711,7 @@ class OverlayController(
         orientation = orientation,
         fill = fill,
         reserveTrailing = reserveTrailing,
+        showDot = showDot,
         render = render,
         capsuleFullTrack = capsuleFullTrack,
         squareFill = squareFill,
@@ -3073,7 +3744,15 @@ class OverlayController(
         preview?.let { it.streamLevels[streamType] = level.coerceIn(0f, 1f); return level.coerceIn(0f, 1f) }
         liveEdit?.let { it.streamLevels[streamType] = level.coerceIn(0f, 1f); return level.coerceIn(0f, 1f) }
         val max = audioManager.getStreamMaxVolume(streamType).coerceAtLeast(1)
-        val target = (level * max).roundToInt().coerceIn(0, max)
+        val min = streamMin(streamType).coerceIn(0, max)
+        val span = (max - min).coerceAtLeast(1)
+        val target = (min + level * span).roundToInt().coerceIn(min, max)
+        // Dragging the media slider anywhere below its maximum invalidates a boost sitting on top of
+        // it, so the panel can never show gain applied over a volume that is no longer full.
+        if (streamType == AudioManager.STREAM_MUSIC && target < max) {
+            MediaBooster.reset()
+            refreshBoost()
+        }
         // Before the write, so the buzz lands with the finger rather than after the platform has
         // been round-tripped. Every skin's stream sliders funnel through here, so this is the one
         // place that gives all nine styles the same drag feedback.
@@ -3103,14 +3782,29 @@ class OverlayController(
         ) {
             runCatching { audioManager.ringerMode = AudioManager.RINGER_MODE_VIBRATE }
         }
-        return target / max.toFloat()
+        return (target - min) / span.toFloat()
     }
+
+    /**
+     * The lowest index [streamType] will actually hold. Zero for every stream the panel has drawn so
+     * far except the call one, whose floor is 1 on nearly every device — a call can be quietened but
+     * not silenced. Mapping a slider over min..max rather than 0..max is what puts its empty position
+     * at that real floor, instead of one step above the bottom with a dead zone underneath.
+     */
+    private fun streamMin(streamType: Int): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching { audioManager.getStreamMinVolume(streamType) }.getOrDefault(0)
+        } else {
+            0
+        }
 
     private fun streamLevel(streamType: Int): Float {
         preview?.let { return it.streamLevels[streamType] ?: 0.5f }
         liveEdit?.let { return it.streamLevels[streamType] ?: 0.5f }
         val max = audioManager.getStreamMaxVolume(streamType).coerceAtLeast(1)
-        return audioManager.getStreamVolume(streamType) / max.toFloat()
+        val min = streamMin(streamType).coerceIn(0, max)
+        val span = (max - min).coerceAtLeast(1)
+        return ((audioManager.getStreamVolume(streamType) - min) / span.toFloat()).coerceIn(0f, 1f)
     }
 
     /**
@@ -3204,7 +3898,12 @@ class OverlayController(
         // "started" audio player registered while silent/backgrounded, and the OS still lists it as an
         // active playback configuration; isMusicActive() reflects real output, so it clears those
         // stale entries when the user isn't actually listening to anything.
-        if (!audioManager.isMusicActive()) return emptyList()
+        //
+        // A call is the other way an app is audibly playing: its voice audio runs on the call stream,
+        // which isMusicActive() says nothing about, so a call in progress opens the same gate. Without
+        // this the app doing the talking — Discord, an in-game voice channel — would be the one app
+        // the per-app sliders never listed (issue 19).
+        if (!audioManager.isMusicActive() && !callActive()) return emptyList()
         val players = if (PrivilegedManager.isReady) PrivilegedManager.getActivePlayers() else emptyList()
         val pm = context.packageManager
         val foreground = foregroundPackage
@@ -3312,6 +4011,10 @@ class OverlayController(
         const val FLOATING_BTN_SIZE_DP = 56
         const val FLOATING_AUTO_HIDE_MS = 4000L
         const val EMPTY_STATE_TAG = "__empty_state__"
+
+        /** How often an open panel re-checks whether a call has started or ended under it. Fast
+         *  enough that the reshape reads as immediate, rare enough to be free. */
+        const val CALL_WATCH_MS = 300L
         const val AUTO_HIDE_78_MS = 6000L
         const val SLIDE_IN_MS = 220L
         const val SLIDE_OUT_MS = 200L

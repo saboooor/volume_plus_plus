@@ -73,6 +73,25 @@ open class Strings {
     open val volumeSubtitle get() = "Control each sound channel"
     open val volumeAppVolumes get() = "App volume"
 
+    /**
+     * The level beside a slider, as the familiar percentage *and* the device's real step position —
+     * e.g. `73% · 11/15`. How many steps a channel has is fixed by the device's audio policy and
+     * can't be changed by an app, so showing them is what explains why a level lands on 73% and not
+     * on 74%: there is no position in between. Digits and punctuation only, so it needs no
+     * translation unless a language wants a different separator.
+     */
+    open fun volumeLevel(percent: Int, step: Int, steps: Int) = "$percent% · $step/$steps"
+
+    /** The − and + buttons beside each slider, as a screen reader announces them. [channel] is the
+     *  row's own name, e.g. "Media". */
+    open fun volumeStepDown(channel: String) = "Turn $channel down one step"
+    open fun volumeStepUp(channel: String) = "Turn $channel up one step"
+
+    /** The same pair of buttons on a *settings* slider, which is tuned rather than turned up or
+     *  down. [setting] is the row's own title, e.g. "Hold follow speed". */
+    open fun settingStepDown(setting: String) = "Decrease $setting"
+    open fun settingStepUp(setting: String) = "Increase $setting"
+
     open val streamMedia get() = "Media"
     open val streamCall get() = "Call"
     open val streamRing get() = "Ring"
@@ -217,6 +236,40 @@ open class Strings {
         "The panel's SETTINGS / SEE MORE button opens Volume++ instead of Android's sound " +
             "settings."
 
+    open val overlayMediaBoost get() = "Media volume booster"
+    open val overlayMediaBoostDetail get() =
+        "At 100%, press Volume Up twice to go louder still — up to 120%."
+    open val overlayMediaBoostUnavailable get() =
+        "This device won't let Volume++ boost the volume. Shizuku or root may make it possible."
+    open val overlayMediaBoostInfo get() =
+        "The booster adds up to 6 dB of gain on top of a volume that is already at maximum, so the " +
+            "output goes past what the manufacturer tuned the speakers for.\n\n" +
+            "Expect distortion on loud material, and be careful with headphones: sustained " +
+            "listening at boosted volume can damage your hearing. The boost clears itself whenever " +
+            "you drop below 100% or change audio output."
+
+    open val overlayRememberAppVolumes get() = "Remember each app's volume"
+    open val overlayRememberAppVolumesDetail get() =
+        "An app plays at the level you last gave it instead of starting at full. Set an app back " +
+            "to 100% to forget it. Needs Shizuku or root, like the per-app sliders themselves."
+
+    // ── Quick Settings tile ─────────────────────────────────────────────────────────────────────
+
+    /** The tile's name once it is on screen. The name in the system's tile *picker* comes from
+     *  res/values/strings.xml instead — the OS draws that one before we get a say. */
+    open val qsTileLabel get() = "Volume++ panel"
+
+    open val overlayQuickTile get() = "Quick Settings tile"
+    open val overlayQuickTileDetail get() =
+        "Opens the panel from Quick Settings, so you can still reach it if the volume buttons stop " +
+            "working. Only needs the first step above."
+    open val overlayQuickTileAdd get() = "Add tile"
+
+    /** Shown instead of the button below Android 13, which has no way for an app to offer the tile —
+     *  it can only be dragged in by hand. [tile] is the tile's own name. */
+    open fun overlayQuickTileManual(tile: String) =
+        "Open Quick Settings, tap Edit, and drag in the \"$tile\" tile."
+
     open val overlayMotion get() = "Motion"
     open val overlayPopupDuration get() = "Popup duration"
     open val overlayMotionInfo get() =
@@ -263,8 +316,8 @@ open class Strings {
     open val overlayPreview get() = "Preview"
     open val overlayGrantToPreview get() = "Grant overlay to preview"
 
-    /** The app name + version line at the foot of the Overlay tab, e.g. `Volume++ 1.1.0`. */
-    open fun appVersion(appName: String, version: String) = "$appName $version"
+    /** The app name + version line at the foot of the Overlay tab, e.g. `Volume++ v2.0`. */
+    open fun appVersion(appName: String, version: String) = "$appName v$version"
 
     // ── Overlay tab: per-style edit hub ─────────────────────────────────────────────────────────
 
@@ -321,6 +374,10 @@ open class Strings {
     open val liveEditColourHint get() = "Tap the panel or a swatch, then dial or type a colour"
     open val liveEditUseDefault get() = "Use default"
     open val liveEditPickFromScreen get() = "Pick from screen"
+
+    /** Fills every swatch on the panel being edited from the device's own Material You palette.
+     *  Only shown on Android 12+, where there is a system palette to read (see [systemPalette]). */
+    open val liveEditUseSystemColours get() = "Use system colours"
 
     /** Editor bar's component switch — short forms, so they fit a floating bar. */
     open val liveEditComponentMain get() = "Main"
@@ -423,6 +480,9 @@ open class Strings {
 
     // The Android 15 skin's media-output card and picker.
     open val panelAudioWillPlayOn get() = "Audio will play on"
+
+    /** The same card while a call is in progress, where it names the call's output instead. */
+    open val panelCallingOn get() = "Calling on"
     open val panelConnectADevice get() = "Connect a device"
     open val outputThisPhone get() = "This phone"
     open val outputWiredHeadphones get() = "Wired headphones"

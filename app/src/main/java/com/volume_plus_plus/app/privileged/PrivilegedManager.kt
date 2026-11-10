@@ -664,6 +664,22 @@ object PrivilegedManager {
             }
         }
 
+    /**
+     * Apply a global media loudness boost of [gainMillibels] (0 = off) from the privileged process.
+     * Doubles as the availability probe: a successful `setLoudnessGain(0)` is what tells the app
+     * boosting can work on this device at all. False means "report the booster as unavailable" —
+     * see the AIDL doc for why this legitimately fails on some builds even when bound.
+     */
+    suspend fun setLoudnessGain(gainMillibels: Int): Boolean =
+        withContext(Dispatchers.IO) {
+            val svc = service ?: return@withContext false
+            try {
+                !svc.setLoudnessGain(gainMillibels).startsWith("ERROR")
+            } catch (e: RemoteException) {
+                false
+            }
+        }
+
     /** One active audio player, as reported by the privileged service. */
     data class PlayerSession(val piid: Int, val uid: Int, val packageName: String)
 

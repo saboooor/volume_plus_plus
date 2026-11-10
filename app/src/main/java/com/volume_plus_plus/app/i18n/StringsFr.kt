@@ -52,6 +52,9 @@ object FrenchStrings : Strings() {
     override val volumeSubtitle get() = "Réglez chaque canal audio"
     override val volumeAppVolumes get() = "Volume par application"
 
+    override fun volumeStepDown(channel: String) = "Baisser $channel d'un cran"
+    override fun volumeStepUp(channel: String) = "Monter $channel d'un cran"
+
     override val streamMedia get() = "Multimédia"
     override val streamCall get() = "Appel"
     override val streamRing get() = "Sonnerie"
@@ -180,6 +183,18 @@ object FrenchStrings : Strings() {
         "Le bouton PARAMÈTRES / VOIR PLUS du panneau ouvre Volume++ au lieu des " +
             "paramètres de son d'Android."
 
+    // ── tuile des Réglages rapides ──────────────────────────────────────────────────────────────
+
+    override val qsTileLabel get() = "Panneau Volume++"
+
+    override val overlayQuickTile get() = "Tuile des Réglages rapides"
+    override val overlayQuickTileDetail get() =
+        "Ouvre le panneau depuis les Réglages rapides, pour y accéder même si les touches de volume " +
+            "ne fonctionnent plus. Seule la première étape ci-dessus est nécessaire."
+    override val overlayQuickTileAdd get() = "Ajouter la tuile"
+    override fun overlayQuickTileManual(tile: String) =
+        "Ouvrez les Réglages rapides, appuyez sur Modifier, puis faites glisser la tuile \"$tile\"."
+
     override val overlayMotion get() = "Mouvement"
     override val overlayPopupDuration get() = "Durée d'affichage"
     override val overlayMotionInfo get() =
@@ -278,6 +293,7 @@ object FrenchStrings : Strings() {
         "Touchez le panneau ou un échantillon, puis réglez ou saisissez une couleur"
     override val liveEditUseDefault get() = "Valeur par défaut"
     override val liveEditPickFromScreen get() = "Prélever à l'écran"
+    override val liveEditUseSystemColours get() = "Utiliser les couleurs du système"
 
     override val liveEditComponentMain get() = "Principal"
     override val liveEditComponentExpanded get() = "Étendu"
@@ -362,6 +378,7 @@ object FrenchStrings : Strings() {
     override val panelTurnOffNow get() = "DÉSACTIVER MAINTENANT"
 
     override val panelAudioWillPlayOn get() = "L'audio sera lu sur"
+    override val panelCallingOn get() = "Appel sur"
     override val panelConnectADevice get() = "Connecter un appareil"
     override val outputThisPhone get() = "Ce téléphone"
     override val outputWiredHeadphones get() = "Écouteurs filaires"

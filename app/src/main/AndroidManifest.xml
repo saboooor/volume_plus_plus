@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Short haptic tick when the user selects the vibrate ringer mode. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- The media booster attaches a LoudnessEnhancer to the audio output. Normal-level, so it is
+         granted at install — but it is NOT sufficient for an effect on the global output mix, which
+         needs the signature-level MODIFY_AUDIO_ROUTING and therefore the privileged service. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- The screen eyedropper reads a single frame of the display through MediaProjection, which
          the platform only allows from a foreground service of the matching type. The notification
          that service posts is also the user's control surface while they browse for a colour. -->
@@ -65,10 +69,36 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Same trick, for the Quick Settings tile: the panel is an overlay window and the system
+             draws those below the shade, so it has to be raised from an activity, which is what
+             closes the shade. Invisible and finishes immediately, like the one above. -->
+        <activity
+            android:name=".ui.PanelTrampolineActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".service.ColorPickService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <!-- Opens the Volume++ panel from Quick Settings, for a phone whose volume buttons no longer
+             work. Needs only draw-over-other-apps: nothing here touches the hardware keys, so the
+             accessibility service below is not a prerequisite. The label is what the OS lists in the
+             tile picker, so it is a platform resource (see res/values/strings.xml). -->
+        <service
+            android:name=".service.VolumePanelTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_nav_volume"
+            android:label="@string/qs_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!-- Note: .service.RootUserService is deliberately NOT declared here. libsu's RootService
              is a ContextWrapper that only imitates a Service — the framework never instantiates it,
