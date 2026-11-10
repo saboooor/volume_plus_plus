@@ -11,6 +11,8 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.PointF
 import android.graphics.Typeface
+import android.graphics.Outline
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.content.res.ColorStateList
@@ -18,6 +20,7 @@ import android.graphics.drawable.RippleDrawable
 import android.view.MotionEvent
 import android.view.SoundEffectConstants
 import android.view.ViewConfiguration
+import android.graphics.drawable.LayerDrawable
 import android.app.NotificationManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -31,11 +34,13 @@ import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
+import android.view.accessibility.CaptioningManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -183,6 +188,10 @@ class OverlayController(
 
     // ── customization (position + colour) ───────────────────────────────────────────────────────────
 
+    /** The version being shown — the one being previewed or edited, else the user's selected style. */
+    private fun currentVersion(): OverlayVersion =
+        preview?.version ?: liveEdit?.version ?: OverlayVersion.current(prefs)
+
     /** The customization for the version being shown — the in-progress one in preview/live-edit, else
      *  the saved one for the user's selected style. */
     private fun currentCustomization(): VersionCustomization =
@@ -271,6 +280,10 @@ class OverlayController(
     private var callFocusStream = AudioManager.STREAM_VOICE_CALL
     /** The above-100% indicator, present only on panels that draw one and only while boosting. */
     private var boostBar: BoostBar? = null
+    /** The Live Caption toggle currently on screen, retinted in place as its state flips. */
+    private var captionButton: ImageView? = null
+    private val captionManager by lazy { context.getSystemService(CaptioningManager::class.java) }
+    private val boostStateListener: () -> Unit = { refreshBoost() }
     /** The Android 9–11 ringer button currently on screen, so a mode change can retint it in place
      *  instead of rebuilding the whole panel (which cancels the app-sync load and drops frames, and
      *  is what made rapid mode taps feel laggy). */
@@ -531,8 +544,90 @@ class OverlayController(
         }
     }
 
+    /**
+     * Stock Pixel panels carry a Live Caption toggle at the bottom of the sheet (and of the
+     * collapsed panel). The API behind it needs the signature-level SET_SYSTEM_AUDIO_CAPTION, so
+     * the write goes through the privileged service, which sets Secure.ODI_CAPTIONS_ENABLED — the
+     * flag the captioning engine itself observes and [CaptioningManager.isSystemAudioCaptioningEnabled]
+     * reads back. isSystemAudioCaptioningUiEnabled is stock's own "icon in volume control" pref,
+     * so hiding the icon in Live Caption settings hides ours too.
+     */
+    private fun captionsSupported(): Boolean =
+        // Opt-in: off unless the user asked for the button in the Overlay settings.
+        prefs.isLiveCaptionButtonEnabled() &&
+            liveCaptionAvailable(context) &&
+            captionManager?.isSystemAudioCaptioningUiEnabled == true
+
+    /** The Live Caption toggle button, or null where the device (or the user's icon pref) lacks it. */
+    private fun makeCaptionButton(): ImageView? {
+        if (!captionsSupported()) return null
+        return ImageView(context).apply {
+            setOnClickListener {
+                if (isEditor()) return@setOnClickListener // visual-only preview
+                armAutoHide() // interacting keeps the panel alive
+                toggleCaptions()
+            }
+            captionButton = this
+            refreshCaptionButton()
+        }
+    }
+
+    private fun toggleCaptions() {
+        if (!PrivilegedManager.isReady) {
+            // The write needs the privileged backend, so with none bound the button lands the user
+            // on the real toggle rather than flipping nothing.
+            openCaptionSettings()
+            return
+        }
+        scope.launch {
+            val next = captionManager?.isSystemAudioCaptioningEnabled != true
+            // A delivered write retints on the spot; anything else (a bound service still running
+            // code from before this feature existed drops the unknown transaction silently) falls
+            // back to the real toggle rather than leaving a button that does nothing.
+            if (PrivilegedManager.setCaptionsEnabled(next)) refreshCaptionButton()
+            else openCaptionSettings()
+        }
+    }
+
+    /** Repaints the caption button for the current state: an accent disc behind the glyph while
+     *  Live Caption is on — the accent tint alone read as nearly unchanged against the icon tint. */
+    private fun refreshCaptionButton() {
+        val btn = captionButton ?: return
+        val on = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            captionManager?.isSystemAudioCaptioningEnabled == true
+        btn.setImageDrawable(captionIcon(on))
+    }
+
+    /** The caption glyph, on an accent disc while Live Caption is on and bare otherwise. Both
+     *  states are fixed-size centred layers with identical bounds — a taller "on" icon would
+     *  stretch the button and shift the rows above it on every toggle. */
+    private fun captionIcon(on: Boolean): Drawable? {
+        val glyph = tintedIcon(
+            R.drawable.ic_captions, if (on) contrastOn(style.accentColor) else style.iconTint,
+        ) ?: return null
+        return LayerDrawable(
+            arrayOf(ovalBg(if (on) style.accentColor else Color.TRANSPARENT), glyph),
+        ).apply {
+            setLayerSize(0, dp(32), dp(32))
+            setLayerGravity(0, Gravity.CENTER)
+            setLayerSize(1, dp(24), dp(24))
+            setLayerGravity(1, Gravity.CENTER)
+        }
+    }
+
+    /** Live Caption's settings page sits inside the system's Accessibility settings. */
+    private fun openCaptionSettings() {
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+        hide()
+    }
+
     fun show() {
         hideFloatingButton(animate = false)
+        if (!isEditor()) MediaBooster.addStateListener(boostStateListener)
         // In live-edit the component being edited decides whether the expanded sheet is drawn (the
         // output picker also draws the sheet, then layers its modal on top). A version with no separate
         // expanded panel (Android 7–8) instead shows its single panel fully expanded, so every row is
@@ -541,6 +636,11 @@ class OverlayController(
             expanded = !it.version.hasExpanded ||
                 it.component == PanelComponent.EXPANDED || it.component == PanelComponent.OUTPUT
         }
+        // "Open the panel expanded" opts a fresh panel out of the stock collapsed reopen: a first
+        // press goes straight to every stream plus the per-app sliders. Editors own [expanded]
+        // themselves above, so the pref must not fight them; and this runs only on a true fresh
+        // show — a press while open refreshes in place without re-expanding.
+        if (preview == null && liveEdit == null && prefs.isOpenExpandedEnabled()) expanded = true
         // Re-read the skin (and current light/dark + customization) each time so changes apply next.
         style = buildStyle()
         render()
@@ -1004,6 +1104,7 @@ class OverlayController(
 
     fun destroy() {
         hideFloatingButton(animate = false)
+        MediaBooster.removeStateListener(boostStateListener)
         hide()
         scope.coroutineContext[Job]?.cancel()
     }
@@ -1169,7 +1270,7 @@ class OverlayController(
                     // clamped so a sliver stays on-screen (never dragged fully out of reach).
                     val nx = (startDx + (event.rawX - startRawX) / perDp).coerceIn(-maxDx(), maxDx())
                     val ny = (startDy + (event.rawY - startRawY) / perDp).coerceIn(-maxDy(), maxDy())
-                    config.withOffset(PanelOffset(nx, ny))
+                    config.withOffset(config.offset().copy(dxDp = nx, dyDp = ny))
                     applyLiveOffset()
                 }
             }
@@ -1292,9 +1393,17 @@ class OverlayController(
      * its anchored edge and, on dismiss, retreats back out the same way.
      */
     private fun exitOffset(view: View): PointF = when {
-        isRichPanel() && expanded -> PointF(0f, view.height.toFloat())          // bottom → down
+        isRichPanel() && expanded -> when (sheetDock()) {
+            SheetPosition.TOP -> PointF(0f, -view.height.toFloat())              // top → up
+            SheetPosition.CENTRE -> PointF(0f, view.height.toFloat())            // centre → down
+            else -> PointF(0f, view.height.toFloat())                            // bottom → down
+        }
         isRichPanel() -> PointF(view.width.toFloat(), 0f)                        // right → right
-        style.placement == Placement.TOP -> PointF(0f, -view.height.toFloat())  // top → up
+        style.placement == Placement.TOP -> when (sheetDock()) {
+            SheetPosition.BOTTOM -> PointF(0f, view.height.toFloat())            // bottom → down
+            SheetPosition.CENTRE -> PointF(0f, view.height.toFloat())            // centre → down
+            else -> PointF(0f, -view.height.toFloat())                           // top → up
+        }
         else -> PointF(view.width.toFloat(), 0f)                                 // right → right
     }
 
@@ -1570,6 +1679,48 @@ class OverlayController(
         }
     }
 
+    /** The expanded sheet's own customization — width, opacity and dock live there: the EXPANDED
+     *  component on the 9–16 skins, the single panel on 7–8 (whose one surface is the sheet). */
+    private fun sheetCustomization(): ComponentCustomization = currentCustomization().component(
+        if (isRichPanel()) PanelComponent.EXPANDED else PanelComponent.MAIN,
+    )
+
+    /** Which edge the expanded sheet docks to: this style's dock for the current orientation (set
+     *  in the position editor), resolved to a real edge — STOCK means each skin's own edge (bottom
+     *  for the 9–16 sheets, top for 7–8). */
+    private fun sheetDock(): SheetPosition = when (val p = sheetCustomization().offset(curOrientation()).dock) {
+        SheetPosition.STOCK -> if (isRichPanel()) SheetPosition.BOTTOM else SheetPosition.TOP
+        else -> p
+    }
+
+    /** The gravity the sheet docks with: its horizontal half (start/end/centre) plus its
+     *  vertical half (top/bottom/centre). */
+    private fun sheetGravity(): Int {
+        val h = when (sheetDock()) {
+            SheetPosition.BOTTOM_LEFT -> Gravity.START
+            SheetPosition.BOTTOM_RIGHT -> Gravity.END
+            else -> Gravity.CENTER_HORIZONTAL
+        }
+        val v = when (sheetDock()) {
+            SheetPosition.TOP -> Gravity.TOP
+            SheetPosition.CENTRE -> Gravity.CENTER_VERTICAL
+            else -> Gravity.BOTTOM
+        }
+        return h or v
+    }
+
+    /** The expanded sheet's width in px: the display width scaled by this style's sheet width for
+     *  the current orientation (set in the width editor, else the style's default), or
+     *  MATCH_PARENT at full width so the sheet spans edge to edge. The same value drives the real
+     *  overlay and the editor's live-edit window, so both agree on the sheet's size. */
+    private fun sheetWidthPx(): Int {
+        val orientation = curOrientation()
+        val scale = sheetCustomization().sheetWidth(orientation)
+            ?: currentVersion().defaultSheetWidth(orientation)
+        if (scale >= 1f) return WindowManager.LayoutParams.MATCH_PARENT
+        return (context.resources.displayMetrics.widthPixels * scale).roundToInt()
+    }
+
     /** Combined height (px) of the status + navigation bars — the vertical space a *confined* window
      *  (the expanded bottom sheet) loses to the system bars. Used to keep the sheet's title/footer
      *  from being pushed under a bar (or off-screen) on tall sheets. Falls back to a sane estimate on
@@ -1608,7 +1759,8 @@ class OverlayController(
         val dx = dp(off.dxDp)
         val dy = dp(off.dyDp)
         val edge = dp(style.edgeMarginDp)
-        // The sheets want the full display width; the compact panels wrap to their content.
+        // The sheets span the display width scaled by the "sheet width" setting; the compact
+        // panels wrap to their content.
         val expandedSheet = isRichPanel() && expanded
         val fullWidth = expandedSheet ||
             (style.placement == Placement.TOP && style.stretch)
@@ -1624,8 +1776,7 @@ class OverlayController(
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         return WindowManager.LayoutParams(
-            if (fullWidth) WindowManager.LayoutParams.MATCH_PARENT
-            else WindowManager.LayoutParams.WRAP_CONTENT,
+            if (fullWidth) sheetWidthPx() else WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType(),
             flags,
@@ -1633,10 +1784,14 @@ class OverlayController(
         ).apply {
             when {
                 isRichPanel() && expanded -> {
-                    // Bottom sheet: docked to the bottom edge, shifted by the offset.
-                    gravity = Gravity.BOTTOM
-                    x = dx
-                    y = -dy
+                    // Sheet docked to the chosen spot (stock: bottom-centre), shifted by the offset.
+                    // x reads off the anchor edge, so an end-docked sheet needs dx inverted.
+                    gravity = sheetGravity()
+                    x = if (sheetDock() == SheetPosition.BOTTOM_RIGHT) -dx else dx
+                    y = when (sheetDock()) {
+                        SheetPosition.TOP, SheetPosition.CENTRE -> dy
+                        else -> -dy
+                    }
                 }
                 isRichPanel() -> {
                     // Right-edge collapsed control, vertically centred.
@@ -1645,10 +1800,14 @@ class OverlayController(
                     y = dy
                 }
                 style.placement == Placement.TOP -> {
-                    // Android 7–8 top sheet.
-                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                    x = dx
-                    y = edge + dy
+                    // Android 7–8 sheet (stock: top).
+                    gravity = sheetGravity()
+                    x = if (sheetDock() == SheetPosition.BOTTOM_RIGHT) -dx else dx
+                    y = when (sheetDock()) {
+                        SheetPosition.TOP -> edge + dy
+                        SheetPosition.CENTRE -> dy
+                        else -> edge - dy
+                    }
                 }
                 else -> {
                     gravity = Gravity.END or Gravity.CENTER_VERTICAL
@@ -1676,12 +1835,16 @@ class OverlayController(
         val edge = dp(style.edgeMarginDp)
         when {
             isRichPanel() && expanded -> {
-                // Full-width bottom sheet: shift it right by dx (keeping full width) and down by dy.
-                lp.width = FrameLayout.LayoutParams.MATCH_PARENT
-                lp.gravity = Gravity.BOTTOM
+                // Sheet docked to the chosen spot (stock: bottom-centre), narrowed by the "sheet
+                // width" setting, then shifted by dx/dy. Setting both side margins keeps dx
+                // working the same under START, CENTRE_HORIZONTAL and END anchoring.
+                lp.width = sheetWidthPx()
+                lp.gravity = sheetGravity()
                 lp.leftMargin = dx
                 lp.rightMargin = -dx
-                lp.bottomMargin = -dy
+                if (sheetDock() == SheetPosition.TOP || sheetDock() == SheetPosition.CENTRE)
+                    lp.topMargin = dy
+                else lp.bottomMargin = -dy
             }
 
             isRichPanel() -> {
@@ -1691,10 +1854,15 @@ class OverlayController(
             }
 
             style.placement == Placement.TOP -> {
-                if (style.stretch) lp.width = FrameLayout.LayoutParams.MATCH_PARENT
-                lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                if (style.stretch) lp.width = sheetWidthPx()
+                lp.gravity = sheetGravity()
                 lp.leftMargin = dx
-                lp.topMargin = edge + dy
+                lp.rightMargin = -dx
+                when (sheetDock()) {
+                    SheetPosition.TOP -> lp.topMargin = edge + dy
+                    SheetPosition.CENTRE -> lp.topMargin = dy
+                    else -> lp.bottomMargin = edge - dy
+                }
             }
 
             else -> {
@@ -1716,6 +1884,7 @@ class OverlayController(
         ringerButtons = null
         genericRingSlider = null
         alarmsOnlyRow = null
+        captionButton = null
         // Drop any previous app box/timer; the renderers that show apps re-arm it via startAppSync,
         // and the collapsed panels (which show none) then correctly leave it stopped.
         stopAppSync()
@@ -1750,7 +1919,9 @@ class OverlayController(
         return FrameLayout(context).apply {
             val pad = dp(style.containerPaddingDp)
             setPadding(pad, pad, pad, pad)
-            background = roundedBg(style.containerColor, dp(style.containerCornerDp).toFloat())
+            // The 7–8 panel has no collapsed form — its one surface is the expanded sheet, so it
+            // carries the same opacity setting.
+            background = roundedBg(sheetSurfaceColor(), dp(style.containerCornerDp).toFloat())
             addView(
                 content,
                 FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT),
@@ -1789,7 +1960,7 @@ class OverlayController(
             AudioManager.STREAM_MUSIC,
             tintedIcon(R.drawable.ic_stream_media),
             null,
-            if (seven) null else "Media",
+            if (seven) null else strings.streamMedia,
             if (callMode) ChevronDir.NONE else leadChevron,
             // The Nougat/Oreo muted note (the glyph is cut along the slash), not the modern overlay.
             mutedIcon = tintedIcon(R.drawable.ic_stream_media_off_78),
@@ -1806,8 +1977,8 @@ class OverlayController(
             tintedIcon(R.drawable.ic_stream_call),
             null,
             // "Call" is the stock label, and the short form its siblings already use rather than the
-            // sheet's "Call volume". Untranslated exactly as Media/Ring/Alarm are; localise together.
-            if (seven) null else "Call",
+            // sheet's "Call volume" — the same short stream names the Volume tab shows.
+            if (seven) null else strings.streamCall,
             // Placed by [applyGenericChevron], which puts it on the topmost visible row.
             ChevronDir.NONE,
             // No muted icon: the call stream's floor is 1 on nearly every device (see [streamMin]), so
@@ -1831,7 +2002,7 @@ class OverlayController(
             AudioManager.STREAM_RING,
             tintedIcon(R.drawable.ic_stream_ring),
             null,
-            if (seven) null else "Ring",
+            if (seven) null else strings.streamRing,
             ChevronDir.NONE,
             mutedIcon = tintedIcon(R.drawable.ic_ring_off),
             tieNotification = true,
@@ -1847,7 +2018,7 @@ class OverlayController(
             AudioManager.STREAM_ALARM,
             tintedIcon(R.drawable.ic_stream_alarm),
             null,
-            if (seven) null else "Alarm",
+            if (seven) null else strings.streamAlarm,
             ChevronDir.NONE,
             mutedIcon = tintedIcon(R.drawable.ic_stream_alarm_off),
         ) {}
@@ -1874,11 +2045,15 @@ class OverlayController(
         // Touching a row selects it: it stays highlighted and the rest stay greyed until another row
         // is selected (the greyed state persists past finger-lift, unlike the stock panel's momentary dim).
         streamRows.forEach { s -> s.onDragStateChange = { dragging -> if (dragging) selectGenericRow(s) } }
-        streamRows.forEach { content.addView(it, pillParams(first = false)) }
-        content.addView(
-            appsBox,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        // "App sliders first" puts the per-app box above the stream rows; otherwise it closes the
+        // list below them, matching the stock sheets. Collapsed, the box is in the hidden extras
+        // either way, so the lead row alone still shows.
+        val appsBoxParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
         )
+        if (prefs.isAppsFirstEnabled()) content.addView(appsBox, appsBoxParams)
+        streamRows.forEach { content.addView(it, pillParams(first = false)) }
+        if (!prefs.isAppsFirstEnabled()) content.addView(appsBox, appsBoxParams)
 
         val footer = alarmsOnlyFooter()
         alarmsOnlyRow = footer
@@ -1899,7 +2074,9 @@ class OverlayController(
             container.addView(toggle, lp)
         }
 
-        generic78OrderedRows = streamRows + appsBox
+        generic78OrderedRows =
+            if (prefs.isAppsFirstEnabled()) listOf<View>(appsBox) + streamRows
+            else streamRows + appsBox
         generic78ExtraRows = streamRows.filter { it !== lead } + appsBox
         generic78AppsBox = appsBox
         // The lead row is selected by default — the panel opens from the volume keys, and that is the
@@ -2297,6 +2474,13 @@ class OverlayController(
         }
         legacyIconRefresh?.invoke()
 
+        // Live Caption gets a centred row of its own under the slider icons — the card is only a
+        // column wide, so splitting the tune footer would squeeze both buttons.
+        makeCaptionButton()?.let {
+            it.setPadding(dp(14), dp(12), dp(14), dp(12))
+            card.addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+
         card.addView(
             View(context).apply { setBackgroundColor(style.trackColor) },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)),
@@ -2339,12 +2523,22 @@ class OverlayController(
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             .apply { gravity = Gravity.CENTER_HORIZONTAL }
 
+    /** The sheet's backdrop colour with this style's sheet opacity (set in the colour editor)
+     *  applied. Only the surface goes translucent — [style]'s colours stay untouched, so icon tints
+     *  and child cards drawn from them keep full opacity. */
+    private fun sheetSurfaceColor() = fade(style.containerColor, sheetCustomization().sheetOpacity)
+
     // ── Android 9–11: expanded bottom "Sound" sheet ───────────────────────────────────────────────
 
     private fun sheetContainer() = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         val corner = dp(20).toFloat()
-        background = roundedBg(style.containerColor, corner, corner, 0f, 0f)
+        // The edge the sheet docks to stays square; the others round. Centred = all four rounded.
+        background = when (sheetDock()) {
+            SheetPosition.TOP -> roundedBg(sheetSurfaceColor(), 0f, 0f, corner, corner)
+            SheetPosition.CENTRE -> roundedBg(sheetSurfaceColor(), corner)
+            else -> roundedBg(sheetSurfaceColor(), corner, corner, 0f, 0f)
+        }
         setPadding(0, dp(10), 0, dp(16))
     }
 
@@ -2418,9 +2612,14 @@ class OverlayController(
             addStreamRow911(rows, R.drawable.ic_stream_alarm, strings.panelRowAlarm, AudioManager.STREAM_ALARM)
         }
 
-        // Per-app sliders (Volume++'s reason for existing) are appended in the same native row style.
+        // Per-app sliders (Volume++'s reason for existing) are appended in the same native row
+        // style — at the head of the rows when "App sliders first" is on, else below the streams.
         val appsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        rows.addView(appsBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        rows.addView(
+            appsBox,
+            if (prefs.isAppsFirstEnabled()) 0 else rows.childCount,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
         load911Apps(appsBox)
 
         container.addView(
@@ -2555,13 +2754,20 @@ class OverlayController(
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(24), dp(22), dp(24), dp(20))
         }
+        // Live Caption sits centred between the two buttons — a spacer either side puts it
+        // mid-sheet rather than tucked into a corner.
+        val caption = makeCaptionButton()
         if (isModernSheet()) {
             // Android 13–14: rounded (pill) buttons — SETTINGS outlined, DONE filled tonal.
             footer.addView(outlinedPillButton(strings.panelSettings) { openSoundSettings() })
             footer.addView(View(context), LinearLayout.LayoutParams(0, dp(1), 1f))
+            caption?.let { it.setPadding(dp(12), dp(8), dp(12), dp(8)); footer.addView(it) }
+            footer.addView(View(context), LinearLayout.LayoutParams(0, dp(1), 1f))
             footer.addView(filledPillButton(strings.panelDone) { dismissSheet() })
         } else {
             footer.addView(textButton(strings.panelSeeMore) { openSoundSettings() })
+            footer.addView(View(context), LinearLayout.LayoutParams(0, dp(1), 1f))
+            caption?.let { it.setPadding(dp(12), dp(8), dp(12), dp(8)); footer.addView(it) }
             footer.addView(View(context), LinearLayout.LayoutParams(0, dp(1), 1f))
             footer.addView(textButton(strings.panelDoneCaps) { dismissSheet() })
         }
@@ -2703,7 +2909,7 @@ class OverlayController(
             visibility = if (sheetCallOpen) View.VISIBLE else View.GONE
         }
         val callPill = if (!foldCall) null
-        else makePillSlider(R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
+        else makePillSlider(R.drawable.ic_stream_call, strings.streamCall, AudioManager.STREAM_VOICE_CALL)
 
         if (!onlyMixing) {
             rows.addView(
@@ -2726,22 +2932,22 @@ class OverlayController(
             }
 
             // Media keeps the note icon, switching only to Android 15's crossed speaker at mute.
-            addPillRow(body, R.drawable.ic_stream_media, "Media", AudioManager.STREAM_MUSIC, mutedIconRes = R.drawable.ic_ring_megaphone_off)
+            addPillRow(body, R.drawable.ic_stream_media, strings.streamMedia, AudioManager.STREAM_MUSIC, mutedIconRes = R.drawable.ic_ring_megaphone_off)
             // Under Media, which the volume keys still drive while this sheet is open.
             addBoostBar(body, index = body.childCount, vertical = false, showLabel = true)
             // 16 has already placed the call at the top; 15 keeps it here, second.
-            if (!foldCall) addPillRow(rows, R.drawable.ic_stream_call, "Call", AudioManager.STREAM_VOICE_CALL)
+            if (!foldCall) addPillRow(rows, R.drawable.ic_stream_call, strings.streamCall, AudioManager.STREAM_VOICE_CALL)
             // Ring swaps to the vibrate icon at zero; muting it makes Notification unavailable live;
             // raising it back
             // restores the Notification slider — matching the OS's linked ring/notification behaviour.
             addPillRow(
-                body, R.drawable.ic_stream_ring_phone, "Ring", AudioManager.STREAM_RING,
+                body, R.drawable.ic_stream_ring_phone, strings.streamRing, AudioManager.STREAM_RING,
                 mutedIconRes = R.drawable.ic_ring_vibrate,
                 afterChange = { refreshNotificationAvailability() },
             )
             // Both the active Notification slider and its greyed "unavailable" stand-in are laid out; only
             // the one matching the current ringer state is visible, and they swap live via the Ring row.
-            val notif = makePillSlider(R.drawable.ic_stream_notification, "Notification", AudioManager.STREAM_NOTIFICATION)
+            val notif = makePillSlider(R.drawable.ic_stream_notification, strings.streamNotification, AudioManager.STREAM_NOTIFICATION)
             val notifDisabled = disabledNotificationRow()
             notifSlider = notif
             notifSliderRow = notif
@@ -2749,11 +2955,18 @@ class OverlayController(
             body.addView(notif, pillRowParams())
             body.addView(notifDisabled, pillRowParams())
             refreshNotificationAvailability()
-            addPillRow(body, R.drawable.ic_stream_alarm, "Alarm", AudioManager.STREAM_ALARM)
+            addPillRow(body, R.drawable.ic_stream_alarm, strings.streamAlarm, AudioManager.STREAM_ALARM)
         }
 
+        // "App sliders first" puts the per-app box at the head of the slider rows: index 0 of the
+        // folded [body] while a call leads the sheet, else just under the "Audio will play on"
+        // card, which opens the picker and isn't a slider.
         val appsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        body.addView(appsBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        body.addView(
+            appsBox,
+            if (!prefs.isAppsFirstEnabled()) body.childCount else if (foldCall || onlyMixing) 0 else 1,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
         loadPillRowApps(appsBox)
         if (callPill != null) {
             // The keys are on the call while this sheet is up, and [mediaSlider] is by convention the
@@ -3149,6 +3362,21 @@ class OverlayController(
             isClickable = true
         }.tagColor(EditableColor.OUTPUT_CARD)
 
+        // The now-playing header — the stock media card's top half. Filled async once the
+        // privileged session query lands; stays hidden when nothing's playing or no backend is
+        // bound, so a session-less picker looks exactly as before.
+        val mediaHeader = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        card.addView(
+            mediaHeader,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = dp(12) },
+        )
+
         lateinit var phone: VolumeSlider
         phone = makeSlider(
             icon = tintedIcon(R.drawable.ic_speaker), glyph = null, label = currentOutputLabel(),
@@ -3182,6 +3410,16 @@ class OverlayController(
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)).apply { bottomMargin = dp(10) },
         )
 
+        // The remote ("cast") session's own volume — populated only when the active session reports
+        // a remote absolute control; the phone slider above still drives the local media stream.
+        val remoteBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        card.addView(
+            remoteBox,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
         val connectSurface = pickerColors.secondary
             ?: if (dark) OUTPUT_PICKER_REF_CONNECT_DARK else OUTPUT_PICKER_REF_CONNECT
         val connect = LinearLayout(context).apply {
@@ -3210,6 +3448,9 @@ class OverlayController(
         })
         card.addView(connect, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
+        // The now-playing header's text colour: the picker's own text swatch, else its reference.
+        val content = pickerColors.text ?: refContent
+
         val footer = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END
@@ -3217,9 +3458,102 @@ class OverlayController(
         }
         // Re-tag the DONE pill with the picker's own identity (overriding filledPillButton's default
         // DONE_BG tag) so a tap selects the Media-output DONE, not the Expanded sheet's.
-        footer.addView(filledPillButton(strings.panelDoneCaps) { dismissPicker() }.tagColor(EditableColor.OUTPUT_DONE))
+        footer.addView(filledPillButton(strings.panelDone) { dismissPicker() }.tagColor(EditableColor.OUTPUT_DONE))
         card.addView(footer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // Fill the now-playing header and any cast-volume row once the session list lands; editors
+        // skip it — a preview stays static.
+        if (!isEditor()) {
+            scope.launch {
+                val session = PrivilegedManager.getMediaSessions().firstOrNull()
+                session?.let {
+                    fillMediaCard(it, mediaHeader, remoteBox, content)
+                }
+            }
+        }
         return card
+    }
+
+    /** Fill the media card's top: album art (or the app's icon), what's playing and on what
+     *  device, plus the cast-volume row when the session is a remote one. */
+    private fun fillMediaCard(
+        session: PrivilegedManager.MediaSessionInfo,
+        header: LinearLayout,
+        remoteBox: LinearLayout,
+        content: Int,
+    ) {
+        val art = ImageView(context).apply {
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+                }
+            }
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setImageDrawable(
+                session.art?.let { BitmapDrawable(context.resources, it) }
+                    ?: runCatching { context.packageManager.getApplicationIcon(session.pkg) }
+                        .getOrNull(),
+            )
+        }
+        header.addView(
+            art,
+            LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(14) },
+        )
+        val appLabel = runCatching {
+            context.packageManager.getApplicationInfo(session.pkg, 0)
+                .loadLabel(context.packageManager).toString()
+        }.getOrNull() ?: session.pkg
+        val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(context).apply {
+            text = session.title ?: appLabel
+            setTextColor(content)
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        col.addView(TextView(context).apply {
+            text = listOfNotNull(
+                session.artist, appLabel.takeIf { session.title != null }, currentOutputLabel(),
+            ).joinToString(" · ")
+            setTextColor(fade(content, 0.7f))
+            textSize = 12.5f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        header.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.visibility = View.VISIBLE
+
+        if (session.remote && session.maxVolume > 0) {
+            val slider = makeSlider(
+                icon = tintedIcon(R.drawable.ic_speaker), glyph = null, label = strings.panelCastVolume,
+                chevron = ChevronDir.NONE, onChevron = {},
+                orientation = SliderOrientation.HORIZONTAL, fill = true, reserveTrailing = false,
+                render = SliderRender.PILL_LABEL, percentWhileDragging = true,
+                showDot = isAndroid16(),
+                squareFill = true,
+                mutedIcon = tintedIcon(R.drawable.ic_speaker_off),
+                minNonZeroFillExtraDp = 0f,
+                fadeLabelWhileDragging = false,
+                pickerTrackColor = style.trackColor,
+                pickerFillColor = style.fillColor,
+                pickerContentColor = style.textColor,
+            ) { level ->
+                scope.launch {
+                    PrivilegedManager.setSessionVolume(
+                        session, (level * session.maxVolume).roundToInt(),
+                    )
+                }
+            }
+            slider.level = session.volume.toFloat() / session.maxVolume
+            remoteBox.addView(
+                slider,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(56),
+                ).apply { bottomMargin = dp(10) },
+            )
+        }
     }
 
     /** User-facing "close the picker" (DONE / tap-outside). On the real overlay it collapses back to
@@ -3415,6 +3749,12 @@ class OverlayController(
             setOnClickListener { expand() }
         }.tagColor(EditableColor.OVERFLOW)
         card.addView(more, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        // Live Caption's toggle shares the card's column under the overflow — the card is only as
+        // wide as the pill, so a side-by-side row would squeeze both icons.
+        makeCaptionButton()?.let {
+            it.setPadding(dp(9), dp(4), dp(9), dp(12))
+            card.addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
 
         if (!callMode) {
             // Above everything, so the boost reads as sitting on top of the media capsule below it. The
@@ -4048,3 +4388,15 @@ class OverlayController(
         )
     }
 }
+
+/** Android System Intelligence — the package the Live Caption engine ships in. */
+private const val LIVE_CAPTION_PACKAGE = "com.google.android.as"
+
+/**
+ * Whether this device has Live Caption at all: Android 12+, with the captioning engine's Android
+ * System Intelligence package installed. Where it is absent the flag would toggle nothing, so
+ * neither the panel button nor the Overlay setting that offers it is shown.
+ */
+fun liveCaptionAvailable(context: Context): Boolean =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        runCatching { context.packageManager.getPackageInfo(LIVE_CAPTION_PACKAGE, 0) }.isSuccess

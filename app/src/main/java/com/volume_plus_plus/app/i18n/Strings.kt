@@ -236,17 +236,45 @@ open class Strings {
         "The panel's SETTINGS / SEE MORE button opens Volume++ instead of Android's sound " +
             "settings."
 
+    open val overlayOpenExpanded get() = "Open the panel expanded"
+    open val overlayOpenExpandedDetail get() =
+        "A first volume-key press opens the full sheet — every stream and a slider per playing " +
+            "app — instead of the compact panel."
+
+    open val overlayAppsFirst get() = "App sliders first"
+    open val overlayAppsFirstDetail get() =
+        "In the expanded sheet, sliders for playing apps sit above the Media/Ring/Alarm " +
+            "rows instead of below them."
+
+    open val overlayLiveCaption get() = "Live Caption button"
+    open val overlayLiveCaptionDetail get() =
+        "Adds a Live Caption toggle to the panel, like stock Pixel panels. Turning captions on " +
+            "and off needs Shizuku or root; without either, the button opens Live Caption settings."
+
     open val overlayMediaBoost get() = "Media volume booster"
-    open val overlayMediaBoostDetail get() =
-        "At 100%, press Volume Up twice to go louder still — up to 120%."
+    open fun overlayMediaBoostDetail(maxPercent: Int) =
+        "At 100%, press Volume Up twice to go louder still — up to ${percent(maxPercent)}."
     open val overlayMediaBoostUnavailable get() =
         "This device won't let Volume++ boost the volume. Shizuku or root may make it possible."
-    open val overlayMediaBoostInfo get() =
-        "The booster adds up to 6 dB of gain on top of a volume that is already at maximum, so the " +
+    open fun overlayMediaBoostInfo(gainMillibels: Int) =
+        "The booster requests up to ${boostDecibels(gainMillibels)} dB of gain on top of a volume " +
+            "that is already at maximum, so the " +
             "output goes past what the manufacturer tuned the speakers for.\n\n" +
             "Expect distortion on loud material, and be careful with headphones: sustained " +
             "listening at boosted volume can damage your hearing. The boost clears itself whenever " +
             "you drop below 100% or change audio output."
+
+    open val overlayMediaBoostLimit get() = "Maximum boosted volume"
+    open val overlayMediaBoostLimitInfo get() =
+        "Sets the ceiling, not the current volume. Raising it does not turn the sound up; use " +
+            "Volume Up to increase the boost. Lowering it immediately limits an active boost.\n\n" +
+            "Each 5 percentage points represents 1.5 dB of target gain, not a linear amplitude " +
+            "percentage. The actual increase depends on the device and audio."
+    open fun overlayMediaBoostValue(maxPercent: Int, gainMillibels: Int) =
+        "${percent(maxPercent)} · +${boostDecibels(gainMillibels)} dB"
+
+    protected fun boostDecibels(gainMillibels: Int): String =
+        java.text.DecimalFormat("0.#").format(gainMillibels / 100.0)
 
     open val overlayRememberAppVolumes get() = "Remember each app's volume"
     open val overlayRememberAppVolumesDetail get() =
@@ -257,7 +285,7 @@ open class Strings {
 
     /** The tile's name once it is on screen. The name in the system's tile *picker* comes from
      *  res/values/strings.xml instead — the OS draws that one before we get a say. */
-    open val qsTileLabel get() = "Volume++ panel"
+    open val qsTileLabel get() = "Volume Panel"
 
     open val overlayQuickTile get() = "Quick Settings tile"
     open val overlayQuickTileDetail get() =
@@ -325,13 +353,17 @@ open class Strings {
     open fun editStyleTitle(style: String) = "Edit $style"
 
     open fun editStyleIntro(style: String) =
-        "Customise this style on its own. Position and colours are edited separately, and only " +
-            "$style is changed."
+        "Customise this style on its own. Position, width and colours are edited separately, and " +
+            "only $style is changed."
 
     open val editPosition get() = "Edit position"
     open val editPositionHint get() =
         "The real panel opens on top of your screen — drag it exactly where you want, then Save or " +
             "Cancel from the floating bar."
+    open val editWidth get() = "Edit width"
+    open val editWidthHint get() =
+        "How wide the expanded sheet is, set separately for portrait and landscape. The real sheet " +
+            "opens on top of your screen; slide its width, then Save or Cancel."
     open val editColours get() = "Edit colours"
     open val editColoursHint get() =
         "The panel opens on top of your screen — tap a part of it (or a swatch), dial the colour, " +
@@ -341,9 +373,10 @@ open class Strings {
     // for the style whose hub they're pressed in.
     open val editRestoreDefaults get() = "Restore defaults"
     open val editRestoreDefaultsHint get() =
-        "Undo your edits for this style. Position and colours are restored separately, and no other " +
-            "style is touched."
+        "Undo your edits for this style. Position, width and colours are restored separately, and " +
+            "no other style is touched."
     open val editRestorePosition get() = "Restore default position"
+    open val editRestoreWidth get() = "Restore default width"
     open val editRestoreColours get() = "Restore default colours"
 
     /** The restore confirmations. [style] is an overlay style's name, e.g. `Android 15`. */
@@ -351,18 +384,25 @@ open class Strings {
         "Put every $style panel back where it docks by default, in both portrait and landscape? " +
             "Its colours are kept."
     open fun editRestoreColoursBody(style: String) =
-        "Put every $style colour back to the ones this style ships with? Where you've positioned " +
-            "it is kept."
+        "Put every $style colour back to the ones this style ships with, and its expanded sheet " +
+            "back to full opacity? Where you've positioned it is kept."
+    open fun editRestoreWidthBody(style: String) =
+        "Put the $style expanded sheet back to its default width, in both portrait and landscape? " +
+            "Its position and colours are kept."
     open val editRestoreConfirm get() = "Restore"
 
     /** Confirmation after a restore. [style] is an overlay style's name, e.g. `Android 15`. */
     open fun editRestoredPosition(style: String) = "$style position restored"
     open fun editRestoredColours(style: String) = "$style colours restored"
+    open fun editRestoredWidth(style: String) = "$style width restored"
 
     open val editWhichLayout get() = "Which layout?"
     open val editWhichLayoutBody get() =
         "Portrait and landscape are positioned separately. The screen rotates to the layout you " +
             "pick so you position the panel exactly as it'll appear."
+    open val editWhichLayoutWidthBody get() =
+        "Portrait and landscape each have their own width. The screen rotates to the layout you " +
+            "pick so you size the sheet exactly as it'll appear."
 
     open val orientationPortrait get() = "Portrait"
     open val orientationLandscape get() = "Landscape"
@@ -371,6 +411,8 @@ open class Strings {
 
     open val liveEditPositionHint get() = "Drag the panel, or type X / Y (dp)"
     open val liveEditResetPosition get() = "Reset position"
+    open val liveEditWidthHint get() = "Slide to set the sheet's width in this orientation"
+    open val liveEditResetWidth get() = "Reset width"
     open val liveEditColourHint get() = "Tap the panel or a swatch, then dial or type a colour"
     open val liveEditUseDefault get() = "Use default"
     open val liveEditPickFromScreen get() = "Pick from screen"
@@ -378,6 +420,18 @@ open class Strings {
     /** Fills every swatch on the panel being edited from the device's own Material You palette.
      *  Only shown on Android 12+, where there is a system palette to read (see [systemPalette]). */
     open val liveEditUseSystemColours get() = "Use system colours"
+
+    /** The expanded sheet's own controls in the live editor: width and opacity in the colour
+     *  editor, where it docks in the position editor. */
+    open val liveEditSheetWidth get() = "Sheet width"
+    open val liveEditSheetOpacity get() = "Sheet opacity"
+    open val liveEditSheetPosition get() = "Sheet position"
+    open val sheetPositionStock get() = "Stock"
+    open val sheetPositionBottom get() = "Bottom"
+    open val sheetPositionBottomLeft get() = "Bottom left"
+    open val sheetPositionBottomRight get() = "Bottom right"
+    open val sheetPositionCentre get() = "Centre"
+    open val sheetPositionTop get() = "Top"
 
     /** Editor bar's component switch — short forms, so they fit a floating bar. */
     open val liveEditComponentMain get() = "Main"
@@ -484,6 +538,9 @@ open class Strings {
     /** The same card while a call is in progress, where it names the call's output instead. */
     open val panelCallingOn get() = "Calling on"
     open val panelConnectADevice get() = "Connect a device"
+
+    /** Media card (output picker): the remote ("cast") session's own volume row. */
+    open val panelCastVolume get() = "Cast volume"
     open val outputThisPhone get() = "This phone"
     open val outputWiredHeadphones get() = "Wired headphones"
     open val outputUsbHeadphones get() = "USB headphones"

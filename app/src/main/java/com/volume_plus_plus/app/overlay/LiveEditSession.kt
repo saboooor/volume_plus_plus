@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -25,6 +26,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import com.volume_plus_plus.app.MainActivity
 import com.volume_plus_plus.app.data.OverlayCustomizationPrefs
@@ -45,6 +48,7 @@ private val strings get() = Localization.strings
  * - **Position:** drag the panel anywhere to move it; a tap still works its controls (preview only).
  * - **Colour:** tap a part of the panel (or a swatch chip) to pick the element, then dial its colour
  *   with R/G/B; the panel repaints live. The panel's controls stay interactive for preview.
+ * - **Width:** the expanded sheet only — slide its width for the orientation being edited.
  *
  * Either way the panel's controls never touch the device's real volume/ringer. A small floating
  * control bar (its own overlay window) carries the editing chrome — a Main/Expanded switch (Android
@@ -135,6 +139,13 @@ class LiveEditSession(
     private fun Char.isHexDigit(): Boolean =
         this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
 
+    // The expanded sheet's own controls — width and opacity in COLOR mode, its dock in POSITION
+    // mode — shown only while the sheet is the component being edited.
+    private var sheetControls: View? = null
+    /** Re-read the sheet controls' values from the working copy (after a component switch or a
+     *  reset). */
+    private val sheetRefreshers = mutableListOf<() -> Unit>()
+
     // POSITION-mode state: the manual X/Y coordinate fields (dp). Kept in sync with dragging.
     private var xField: EditText? = null
     private var yField: EditText? = null
@@ -152,6 +163,8 @@ class LiveEditSession(
         config.onColorTapped = { onColorTappedInPanel(it) }
         config.onOffsetChanged = { offset -> updateCoordFields(offset) }
         if (mode == LiveEditMode.COLOR) selectedColor = visibleColors(version, config.component).first()
+        // Width is a property of the expanded sheet alone, so that editor opens straight on it.
+        if (mode == LiveEditMode.WIDTH) config.component = version.sheetComponent()
         controller.show()
         showControlBar()
     }
@@ -276,7 +289,6 @@ class LiveEditSession(
 
         // Collapsible body: the component switch (Android 9+) plus the mode-specific controls.
         val body = LinearLayout(appCtx).apply { orientation = LinearLayout.VERTICAL }
-        barBody = body
 
         if (editComponents().size > 1) {
             // The switch can hold up to three chips (Main / Expanded / Output on Android 15), so it
@@ -313,12 +325,18 @@ class LiveEditSession(
             )
         }
 
-        if (mode == LiveEditMode.POSITION) {
-            buildPositionControls(body)
-        } else {
-            buildColorControls(body)
+        when (mode) {
+            LiveEditMode.POSITION -> buildPositionControls(body)
+            LiveEditMode.COLOR -> buildColorControls(body)
+            LiveEditMode.WIDTH -> buildWidthControls(body)
         }
-        panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        // The body scrolls once it would run off the screen. The colour editor is taller than a
+        // landscape screen, and before this its lower controls simply couldn't be reached.
+        val bodyScroll = MaxHeightScrollView(appCtx) { maxBodyHeight() }.apply {
+            addView(body, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        barBody = bodyScroll
+        panel.addView(bodyScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
         // The colour panel and the position panel (with its X/Y fields) both want a fixed, roomier
         // width; only the bare position bar wrapped its content. Widened so the Cancel/Save row has
@@ -369,6 +387,44 @@ class LiveEditSession(
         }
         panel.addView(hint)
 
+        // Where the sheet docks — a position, so it sits here with the X/Y nudge, and like the
+        // nudge it's set per orientation.
+        val dockSection = LinearLayout(appCtx).apply { orientation = LinearLayout.VERTICAL }
+        dockSection.addView(sectionLabel(strings.liveEditSheetPosition))
+        val dockRow = LinearLayout(appCtx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(px(6), 0, px(6), 0)
+        }
+        val dockChips = LinkedHashMap<SheetPosition, TextView>()
+        SheetPosition.entries.forEach { dock ->
+            val chip = TextView(appCtx).apply {
+                text = sheetPositionLabel(dock)
+                textSize = 13f
+                gravity = Gravity.CENTER
+                val h = px(12); val v = px(8); setPadding(h, v, h, v)
+                isClickable = true
+                setOnClickListener { setDock(dock) }
+            }
+            dockChips[dock] = chip
+            dockRow.addView(chip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = px(6)
+            })
+        }
+        dockSection.addView(
+            HorizontalScrollView(appCtx).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(dockRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+        sheetRefreshers += {
+            val current = config.offset().dock
+            dockChips.forEach { (dock, chip) -> styleChip(chip, active = dock == current) }
+        }
+        sheetControls = dockSection
+        panel.addView(dockSection, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
         val coordRow = LinearLayout(appCtx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -388,6 +444,56 @@ class LiveEditSession(
         val resetRow = LinearLayout(appCtx).apply { orientation = LinearLayout.HORIZONTAL }
         resetRow.addView(textAction(strings.liveEditResetPosition, onBar) { resetOffset() })
         panel.addView(resetRow)
+        refreshSheetControls()
+    }
+
+    /** The chip label for a sheet dock. */
+    private fun sheetPositionLabel(dock: SheetPosition): String = when (dock) {
+        SheetPosition.STOCK -> strings.sheetPositionStock
+        SheetPosition.BOTTOM -> strings.sheetPositionBottom
+        SheetPosition.BOTTOM_LEFT -> strings.sheetPositionBottomLeft
+        SheetPosition.BOTTOM_RIGHT -> strings.sheetPositionBottomRight
+        SheetPosition.CENTRE -> strings.sheetPositionCentre
+        SheetPosition.TOP -> strings.sheetPositionTop
+    }
+
+    // ── width controls ──────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The width editor's bar body: a hint, the sheet-width slider for the orientation being edited,
+     * and a Reset back to the style's default width. Width only means anything on the expanded sheet, which is the
+     * one component this editor opens, so there's no component switch.
+     */
+    private fun buildWidthControls(panel: LinearLayout) {
+        panel.addView(TextView(appCtx).apply {
+            text = strings.liveEditWidthHint
+            setTextColor(fade(onBar, 0.7f))
+            textSize = 12f
+            val p = px(4); setPadding(px(6), p, px(6), p)
+        })
+        val width = percentSlider(
+            strings.liveEditSheetWidth, MIN_SHEET_WIDTH,
+            current = { config.sheetWidth() },
+        ) { config.withSheetWidth(it); applySheetLive() }
+        sheetControls = width
+        panel.addView(width, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val resetRow = LinearLayout(appCtx).apply { orientation = LinearLayout.HORIZONTAL }
+        resetRow.addView(textAction(strings.liveEditResetWidth, onBar) {
+            config.withSheetWidth(null)
+            applySheetLive()
+            refreshSheetControls()
+        })
+        panel.addView(resetRow)
+        refreshSheetControls()
+    }
+
+    /** Dock the sheet somewhere else. The sheet's rounded corners follow its dock, so its content
+     *  is rebuilt as well as its window moved. */
+    private fun setDock(dock: SheetPosition) {
+        config.withDock(dock)
+        controller.applyLiveColors()
+        controller.applyLiveOffset()
+        refreshSheetControls()
     }
 
     private fun coordLabel(text: String) = TextView(appCtx).apply {
@@ -420,7 +526,7 @@ class LiveEditSession(
         val cur = config.offset()
         val dx = xField?.text?.toString()?.trim()?.toFloatOrNull() ?: cur.dxDp
         val dy = yField?.text?.toString()?.trim()?.toFloatOrNull() ?: cur.dyDp
-        config.withOffset(PanelOffset(dx, dy))
+        config.withOffset(cur.copy(dxDp = dx, dyDp = dy))
         controller.applyLiveOffset() // repositions the panel; its onOffsetChanged refreshes the fields
     }
 
@@ -551,7 +657,94 @@ class LiveEditSession(
             panel.addView(systemRow)
         }
 
+        // The sheet's opacity: how it looks rather than where it sits, so it lives with the colours,
+        // and like the colours it's shared by both orientations.
+        val opacity = percentSlider(
+            strings.liveEditSheetOpacity, MIN_SHEET_OPACITY,
+            current = { config.working.component(config.component).sheetOpacity },
+        ) { config.withSheetOpacity(it); applySheetLive() }
+        sheetControls = opacity
+        panel.addView(opacity, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = px(4)
+        })
+        refreshSheetControls()
+
         refreshPickerFromSelection()
+    }
+
+    /**
+     * A labelled percentage slider over [min]..1, reading its value through [current] (so a
+     * component switch can re-seed it) and reporting each move to [onChange].
+     */
+    private fun percentSlider(
+        label: String,
+        min: Float,
+        current: () -> Float,
+        onChange: (Float) -> Unit,
+    ): View {
+        val steps = ((1f - min) * 100).roundToInt()
+        val value = TextView(appCtx).apply {
+            setTextColor(fade(onBar, 0.7f))
+            textSize = 12f
+        }
+        val header = LinearLayout(appCtx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(px(6), px(4), px(6), 0)
+            addView(sectionLabel(label, padded = false), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(value)
+        }
+        var seeding = false
+        val bar = SeekBar(appCtx).apply {
+            max = steps
+            progressTintList = ColorStateList.valueOf(accent)
+            thumbTintList = ColorStateList.valueOf(accent)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                    val v = min + progress / 100f
+                    value.text = percent(v)
+                    if (!seeding) onChange(v)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
+            })
+        }
+        sheetRefreshers += {
+            seeding = true
+            val v = current()
+            bar.progress = ((v - min) * 100).roundToInt().coerceIn(0, steps)
+            value.text = percent(v)
+            seeding = false
+        }
+        return LinearLayout(appCtx).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(bar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    private fun percent(fraction: Float) = "" + (fraction * 100).roundToInt() + "%"
+
+    /** Repaint the sheet for a new width or opacity: its content for the opacity, its window for
+     *  the width. */
+    private fun applySheetLive() {
+        controller.applyLiveColors()
+        controller.applyLiveOffset()
+    }
+
+    /** Show the sheet controls only while the sheet is what's being edited, re-seeded from the
+     *  working copy. */
+    private fun refreshSheetControls() {
+        sheetControls?.visibility = if (config.editingSheet()) View.VISIBLE else View.GONE
+        sheetRefreshers.forEach { it() }
+    }
+
+    /** A small caption above a group of controls in the bar. */
+    private fun sectionLabel(text: String, padded: Boolean = true) = TextView(appCtx).apply {
+        this.text = text
+        setTextColor(fade(onBar, 0.6f))
+        textSize = 12f
+        if (padded) setPadding(px(6), px(6), px(6), px(2))
     }
 
     /**
@@ -842,11 +1035,13 @@ class LiveEditSession(
 
     /** The components this session lets the user switch between. The Android 15 output picker is a
      *  colour-only surface (a centred modal, not a docked panel), so it's offered in COLOR mode only —
-     *  in POSITION mode only the panels that actually dock (Main / Expanded) are positioned. */
-    private fun editComponents(): List<PanelComponent> =
-        if (mode == LiveEditMode.POSITION)
-            version.components().filter { it != PanelComponent.OUTPUT }
-        else version.components()
+     *  in POSITION mode only the panels that actually dock (Main / Expanded) are positioned, and the
+     *  WIDTH editor only ever edits the expanded sheet. */
+    private fun editComponents(): List<PanelComponent> = when (mode) {
+        LiveEditMode.POSITION -> version.components().filter { it != PanelComponent.OUTPUT }
+        LiveEditMode.COLOR -> version.components()
+        LiveEditMode.WIDTH -> listOf(version.sheetComponent())
+    }
 
     /** The switch-chip label for a component. */
     private fun componentLabel(component: PanelComponent): String = component.shortLabel(strings)
@@ -900,6 +1095,7 @@ class LiveEditSession(
         raiseBar()
         refreshComponentButtons()
         parkColorBarForComponent()
+        refreshSheetControls()
         if (mode == LiveEditMode.COLOR) {
             val vis = visibleColors(version, config.component)
             if (selectedColor !in vis) selectedColor = vis.first()
@@ -925,15 +1121,17 @@ class LiveEditSession(
     }
 
     private fun refreshComponentButtons() {
-        componentButtons.forEach { (comp, chip) ->
-            val active = comp == config.component
-            chip.background = if (active) GradientDrawable().apply {
-                cornerRadius = px(16).toFloat()
-                setColor(fade(accent, if (dark) 0.32f else 0.16f))
-            } else null
-            chip.setTextColor(if (active) accent else fade(onBar, 0.75f))
-            chip.setTypeface(chip.typeface, if (active) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-        }
+        componentButtons.forEach { (comp, chip) -> styleChip(chip, active = comp == config.component) }
+    }
+
+    /** A bar chip's selected/unselected look: a tonal pill and bold accent text while selected. */
+    private fun styleChip(chip: TextView, active: Boolean) {
+        chip.background = if (active) GradientDrawable().apply {
+            cornerRadius = px(16).toFloat()
+            setColor(fade(accent, if (dark) 0.32f else 0.16f))
+        } else null
+        chip.setTextColor(if (active) accent else fade(onBar, 0.75f))
+        chip.setTypeface(null, if (active) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
     }
 
     /** Drag the whole control bar by its handle so the user can move it out of the way. */
@@ -986,8 +1184,12 @@ class LiveEditSession(
     // ── actions ─────────────────────────────────────────────────────────────────────────────────────
 
     private fun resetOffset() {
+        val docked = config.offset().dock != SheetPosition.STOCK
         config.withOffset(PanelOffset())
+        // Back to the stock dock as well: the sheet's corners follow its dock, so repaint it too.
+        if (docked) controller.applyLiveColors()
         controller.applyLiveOffset()
+        refreshSheetControls()
     }
 
     private fun save() {
@@ -1019,6 +1221,15 @@ class LiveEditSession(
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────────────
+
+    /** The tallest the bar's body may grow before it scrolls: the screen as it is now (so a rotation
+     *  is picked up on the next measure) less the bar's own top row and some clearance. */
+    private fun maxBodyHeight(): Int {
+        val screen = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            windowManager.currentWindowMetrics.bounds.height()
+        else appCtx.resources.displayMetrics.heightPixels
+        return (screen - px(140)).coerceAtLeast(px(120))
+    }
 
     private fun overlayType(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -1065,5 +1276,13 @@ class LiveEditSession(
 
         /** True while an on-screen edit is in progress. */
         val isActive: Boolean get() = active != null
+    }
+}
+
+/** A ScrollView that grows with its content up to [maxHeight] — re-read on every measure — and only
+ *  then scrolls. */
+private class MaxHeightScrollView(context: Context, private val maxHeight: () -> Int) : ScrollView(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(maxHeight(), MeasureSpec.AT_MOST))
     }
 }

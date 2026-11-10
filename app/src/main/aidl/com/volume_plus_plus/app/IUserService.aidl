@@ -83,4 +83,42 @@ interface IUserService {
      * Returns "" on success, otherwise a diagnostic beginning with "ERROR".
      */
     String setLoudnessGain(int gainMillibels) = 9;
+
+    /**
+     * Every package whose TAKE_AUDIO_FOCUS app-op is currently set to ignore, read
+     * with a single {@code appops query-op} call. This is the bulk counterpart to
+     * {@link #getAudioFocusMode}: the mixing list is one switch per installed app, so
+     * reconciling its switches against the real op state can't afford one spawned
+     * process per row. Empty list if nothing is ignored or on error.
+     */
+    List<String> getAudioFocusIgnoredPackages() = 10;
+
+    /**
+     * Writes Secure.ODI_CAPTIONS_ENABLED ("odi_captions_enabled") — the flag the stock volume
+     * panel's Live Caption button toggles, which the captioning engine itself observes. The real
+     * API behind the button (AccessibilityManager.setSystemAudioCaptioningEnabled) is gated on
+     * the signature-level SET_SYSTEM_AUDIO_CAPTION, so even this privileged process reaches it by
+     * writing the setting directly. Reading the state needs no privilege, so only the write comes
+     * through here. Returns the raw {@code settings} output for diagnostics.
+     */
+    String setCaptionsEnabled(boolean enabled) = 11;
+
+    /**
+     * Active media sessions, one Bundle each: "pkg" (String), "title"/"artist" (String),
+     * "art" (Bitmap, already scaled small), "token" (MediaSession.Token), "state"
+     * (PlaybackState state), "playbackType"/"vol"/"volMax"/"volControl" (ints; an ABSOLUTE
+     * volControl on a REMOTE playback is the cast device the media card's slider drives).
+     * Reachable here because the shell UID passes MediaSessionManager's MEDIA_CONTENT_CONTROL
+     * check, which the app's own UID fails without notification-listener status. Empty list
+     * if none / on error.
+     */
+    List<Bundle> getMediaSessions() = 12;
+
+    /**
+     * Remote session volume — what the media card's cast slider moves. {@code session} is one
+     * of the Bundles from {@link #getMediaSessions}; its token rebuilds a MediaController here
+     * and {@code level} goes to setVolumeTo, which is how the cast device's own volume moves.
+     * Returns true on success.
+     */
+    boolean setSessionVolume(in Bundle session, int level) = 13;
 }

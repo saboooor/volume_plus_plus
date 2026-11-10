@@ -5,16 +5,18 @@ import com.volume_plus_plus.app.overlay.ComponentCustomization
 import com.volume_plus_plus.app.overlay.OverlayVersion
 import com.volume_plus_plus.app.overlay.PanelColors
 import com.volume_plus_plus.app.overlay.PanelOffset
+import com.volume_plus_plus.app.overlay.SheetPosition
 import com.volume_plus_plus.app.overlay.VersionCustomization
 import com.volume_plus_plus.app.overlay.withDefaultColors
 import com.volume_plus_plus.app.overlay.withDefaultOffsets
+import com.volume_plus_plus.app.overlay.withDefaultWidths
 import org.json.JSONObject
 
 /**
  * Stores each [OverlayVersion]'s [VersionCustomization] independently, keyed by the version's enum
  * name, so every style (Android 7–15) saves its own position/colour tweaks without touching any
- * other. Read by both the editor UI and the live overlay (so a saved change applies the next time the
- * panel shows). Serialised as compact JSON — only fields that differ from the defaults are written,
+ * other — including the expanded sheet's width, opacity and dock. Read by both the editor UI and the
+ * live overlay (so a saved change applies the next time the panel shows). Serialised as compact JSON — only fields that differ from the defaults are written,
  * so an untouched version stores nothing.
  */
 class OverlayCustomizationPrefs(context: Context) {
@@ -45,6 +47,9 @@ class OverlayCustomizationPrefs(context: Context) {
     /** Drop [version]'s colour overrides — every component — keeping where it has been positioned. */
     fun restoreDefaultColors(version: OverlayVersion) = update(version) { it.withDefaultColors() }
 
+    /** Put [version]'s sheet back at full width in both orientations, keeping everything else. */
+    fun restoreDefaultWidth(version: OverlayVersion) = update(version) { it.withDefaultWidths() }
+
     /** Store [transform]ed, falling back to [clear] once nothing is customized, so a version restored
      *  all the way back to stock stores nothing again. */
     private fun update(
@@ -67,11 +72,15 @@ class OverlayCustomizationPrefs(context: Context) {
         put("portrait", encodeOffset(c.portrait))
         put("landscape", encodeOffset(c.landscape))
         put("colors", encodeColors(c.colors))
+        c.portraitWidth?.let { put("portraitWidth", it.toDouble()) }
+        c.landscapeWidth?.let { put("landscapeWidth", it.toDouble()) }
+        if (c.sheetOpacity != 1f) put("sheetOpacity", c.sheetOpacity.toDouble())
     }
 
     private fun encodeOffset(o: PanelOffset) = JSONObject().apply {
         put("dx", o.dxDp.toDouble())
         put("dy", o.dyDp.toDouble())
+        if (o.dock != SheetPosition.STOCK) put("dock", o.dock.name)
     }
 
     private fun encodeColors(colors: PanelColors) = JSONObject().apply {
@@ -100,10 +109,17 @@ class OverlayCustomizationPrefs(context: Context) {
 
     private fun decodeComponent(json: JSONObject?): ComponentCustomization {
         if (json == null) return ComponentCustomization()
+        fun optWidth(key: String): Float? = if (json.has(key)) json.getDouble(key).toFloat() else null
+        // "sheetWidth" is the single width saved before it was split per orientation; it seeds
+        // both until one of them is set on its own. Absent, each falls back to the style's default.
+        val legacyWidth = optWidth("sheetWidth")
         return ComponentCustomization(
             portrait = decodeOffset(json.optJSONObject("portrait")),
             landscape = decodeOffset(json.optJSONObject("landscape")),
             colors = decodeColors(json.optJSONObject("colors")),
+            portraitWidth = optWidth("portraitWidth") ?: legacyWidth,
+            landscapeWidth = optWidth("landscapeWidth") ?: legacyWidth,
+            sheetOpacity = json.optDouble("sheetOpacity", 1.0).toFloat(),
         )
     }
 
@@ -112,6 +128,9 @@ class OverlayCustomizationPrefs(context: Context) {
         return PanelOffset(
             dxDp = json.optDouble("dx", 0.0).toFloat(),
             dyDp = json.optDouble("dy", 0.0).toFloat(),
+            dock = json.optString("dock").let { name ->
+                SheetPosition.entries.firstOrNull { it.name == name } ?: SheetPosition.STOCK
+            },
         )
     }
 

@@ -3,8 +3,9 @@ package com.volume_plus_plus.app.overlay
 import android.graphics.Rect
 import android.media.AudioManager
 
-/** What the on-screen live editor is editing: the panel's position, or its colours. */
-enum class LiveEditMode { POSITION, COLOR }
+/** What the on-screen live editor is editing: the panel's position, its colours, or (the
+ *  expanded sheet only) its width. */
+enum class LiveEditMode { POSITION, COLOR, WIDTH }
 
 /**
  * Drives an [OverlayController] in **live-edit** mode: the real panel is drawn on top of the user's
@@ -69,6 +70,33 @@ class LiveEditConfig(
 
     /** This component's colour overrides. */
     fun colors(): PanelColors = working.component(component).colors
+
+    /** Whether the component being edited is the expanded sheet — the only surface whose width,
+     *  opacity and dock can be set. */
+    fun editingSheet(): Boolean = component == version.sheetComponent()
+
+    /** The sheet's width (share of the display width) for the orientation being edited — the one
+     *  set there, else the style's default. */
+    fun sheetWidth(): Float =
+        working.component(component).sheetWidth(orientation) ?: version.defaultSheetWidth(orientation)
+
+    /** Set the sheet's width for the orientation being edited (null = back to the style's default);
+     *  returns the new working copy. */
+    fun withSheetWidth(width: Float?): VersionCustomization {
+        val comp = working.component(component)
+        working = working.withComponent(component, comp.withSheetWidth(orientation, width))
+        return working
+    }
+
+    /** Set the sheet's background opacity; returns the new working copy. */
+    fun withSheetOpacity(opacity: Float): VersionCustomization {
+        val comp = working.component(component)
+        working = working.withComponent(component, comp.copy(sheetOpacity = opacity.coerceIn(MIN_SHEET_OPACITY, 1f)))
+        return working
+    }
+
+    /** Dock the sheet at [dock] for the orientation being edited, keeping its nudge. */
+    fun withDock(dock: SheetPosition): VersionCustomization = withOffset(offset().copy(dock = dock))
 
     /** Set one editable colour on this component (null clears the override); returns the new working copy. */
     fun withColor(which: EditableColor, value: Int?): VersionCustomization {

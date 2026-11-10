@@ -1,6 +1,8 @@
 package com.volume_plus_plus.app.data
 
 import android.content.Context
+import androidx.core.content.edit
+import com.volume_plus_plus.app.audio.BoostPolicy
 import com.volume_plus_plus.app.overlay.IconSet
 import com.volume_plus_plus.app.overlay.LegacyVersion
 import com.volume_plus_plus.app.overlay.OverlaySkin
@@ -125,6 +127,17 @@ class OverlayPrefs(context: Context) {
     }
 
     /**
+     * Whether the panel carries a Live Caption toggle, as stock Pixel panels do. Off by default —
+     * not every user wants the extra button, and it only does anything on a device that has Live
+     * Caption at all.
+     */
+    fun isLiveCaptionButtonEnabled(): Boolean = prefs.getBoolean(KEY_LIVE_CAPTION_BUTTON, false)
+
+    fun setLiveCaptionButtonEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LIVE_CAPTION_BUTTON, enabled).apply()
+    }
+
+    /**
      * Whether Volume Up past 100% may engage the media booster. Off by default, and deliberately so:
      * it drives the output above the level the manufacturer calibrated for, so it can distort, and
      * sustained listening up there can damage hearing. Never on unless the user asks for it.
@@ -133,6 +146,36 @@ class OverlayPrefs(context: Context) {
 
     fun setMediaBoostEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_MEDIA_BOOST, enabled).apply()
+    }
+
+    fun getMediaBoostMaxSteps(): Int = BoostPolicy.normalizeMaxSteps(
+        prefs.getInt(KEY_MEDIA_BOOST_MAX_STEPS, BoostPolicy.DEFAULT_MAX_STEPS),
+    )
+
+    fun setMediaBoostMaxSteps(steps: Int) {
+        prefs.edit { putInt(KEY_MEDIA_BOOST_MAX_STEPS, BoostPolicy.normalizeMaxSteps(steps)) }
+    }
+
+    /**
+     * Whether a first volume-key press opens the panel straight into its expanded sheet — every
+     * stream plus one slider per playing app — instead of the compact panel stock reopens with.
+     * Off by default: the skins reproduce the stock panels, and those reopen collapsed.
+     */
+    fun isOpenExpandedEnabled(): Boolean = prefs.getBoolean(KEY_OPEN_EXPANDED, false)
+
+    fun setOpenExpandedEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_OPEN_EXPANDED, enabled).apply()
+    }
+
+    /**
+     * Whether the expanded sheet lists a slider per playing app above the stream rows rather
+     * than below them. On by default: the per-app sliders are what Volume++ is for, so a fresh
+     * setup puts them nearest; switching it off gives back the stock order (streams first).
+     */
+    fun isAppsFirstEnabled(): Boolean = prefs.getBoolean(KEY_APPS_FIRST, true)
+
+    fun setAppsFirstEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_APPS_FIRST, enabled).apply()
     }
 
     /**
@@ -188,8 +231,12 @@ class OverlayPrefs(context: Context) {
         const val DEFAULT_POPUP_DURATION_SECONDS = 4.0f
         const val KEY_FLOATING_X = "floating_x"
         const val KEY_FLOATING_Y = "floating_y"
+        const val KEY_OPEN_EXPANDED = "open_expanded"
+        const val KEY_LIVE_CAPTION_BUTTON = "live_caption_button"
+        const val KEY_APPS_FIRST = "apps_first"
         const val KEY_REMEMBER_APP_VOLUMES = "remember_app_volumes"
         const val KEY_MEDIA_BOOST = "media_boost"
+        const val KEY_MEDIA_BOOST_MAX_STEPS = "media_boost_max_steps"
         const val KEY_HOLD_FOLLOW_SCALE = "hold_follow_scale"
         const val KEY_HOLD_SETTLE_SCALE = "hold_settle_scale"
         const val KEY_HOLD_STEP_HAPTICS = "hold_step_haptics"

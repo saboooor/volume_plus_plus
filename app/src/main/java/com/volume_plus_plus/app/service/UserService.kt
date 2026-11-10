@@ -1,10 +1,18 @@
 package com.volume_plus_plus.app.service
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.AudioManager
+import android.media.MediaMetadata
 import android.media.audiofx.LoudnessEnhancer
+import android.media.session.MediaController
+import android.media.session.MediaSession
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Bundle
 import com.volume_plus_plus.app.IUserService
+import com.volume_plus_plus.app.audio.BoostPolicy
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -49,6 +57,14 @@ class UserService() : IUserService.Stub() {
 
     override fun getAudioFocusMode(packageName: String): String {
         return runCommand(arrayOf("appops", "get", packageName, "TAKE_AUDIO_FOCUS"))
+    }
+
+    override fun getAudioFocusIgnoredPackages(): List<String> {
+        return runCommand(arrayOf("appops", "query-op", "TAKE_AUDIO_FOCUS", "ignore"))
+            .lineSequence()
+            .map { it.trim() }
+            .filter { PACKAGE_NAME_RE.matches(it) }
+            .toList()
     }
 
     /**
@@ -174,7 +190,7 @@ class UserService() : IUserService.Stub() {
      * from here.
      */
     override fun setLoudnessGain(gainMillibels: Int): String {
-        val gain = gainMillibels.coerceIn(0, MAX_GAIN_MB)
+        val gain = BoostPolicy.clampGain(gainMillibels)
         if (gain == 0) {
             releaseEnhancer()
             return ""
@@ -212,6 +228,92 @@ class UserService() : IUserService.Stub() {
                 LoudnessEnhancer(session).also { it.enabled = true }
             }.getOrNull()
 
+    /**
+     * Live Caption's on/off flag — the same Secure setting the stock volume panel's caption button
+     * flips (see the AIDL doc for why the write is a `settings put` rather than the API). Only the
+     * write needs this process; the read side is a plain public getter in the app.
+     */
+    override fun setCaptionsEnabled(enabled: Boolean): String {
+        return runCommand(
+            arrayOf("settings", "put", "secure", "odi_captions_enabled", if (enabled) "1" else "0")
+        )
+    }
+
+    /**
+     * Active media sessions for the media card. The app's own UID gets nothing from
+     * [MediaSessionManager.getActiveSessions] without notification-listener status, but this
+     * shell-uid process passes the service's MEDIA_CONTENT_CONTROL check. Art is scaled down
+     * before it crosses Binder (the transaction limit is ~1 MB and the card wants a thumb).
+     */
+    override fun getMediaSessions(): List<Bundle> {
+        val ctx = context ?: return emptyList()
+        ensureMediaServiceManager()
+        return try {
+            val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+            msm.getActiveSessions(null).mapNotNull { c ->
+                val meta = c.metadata
+                val info = c.playbackInfo
+                Bundle().apply {
+                    putString("pkg", c.packageName)
+                    putString("title", meta?.getString(MediaMetadata.METADATA_KEY_TITLE))
+                    putString(
+                        "artist",
+                        meta?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                            ?: meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST),
+                    )
+                    (meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                        ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_ART))
+                        ?.let { putParcelable("art", Bitmap.createScaledBitmap(it, 96, 96, true)) }
+                    putParcelable("token", c.sessionToken)
+                    putInt("state", c.playbackState?.state ?: PlaybackState.STATE_NONE)
+                    putInt("playbackType", info?.playbackType ?: MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL)
+                    putInt("vol", info?.currentVolume ?: -1)
+                    putInt("volMax", info?.maxVolume ?: -1)
+                    putInt("volControl", info?.volumeControl ?: 0)
+                }
+            }
+        } catch (e: Throwable) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Make the media framework reachable from this process. Since Android 12 it is a mainline
+     * module whose service binder [android.app.ActivityThread] hands over while starting a normal
+     * app process (MediaFrameworkPlatformInitializer.setMediaServiceManager). Shizuku and root
+     * start this process with app_process, which never does that, so MediaSessionManager's
+     * constructor dereferences a null service manager and getMediaSessions could only ever come
+     * back empty. Doing the hand-over here fixes it; it is skipped where it has already happened,
+     * and before Android 12, where the class doesn't exist and the manager needs none of this.
+     */
+    @Synchronized
+    private fun ensureMediaServiceManager() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        runCatching {
+            val initializer = Class.forName("android.media.MediaFrameworkPlatformInitializer")
+            if (initializer.getMethod("getMediaServiceManager").invoke(null) != null) return
+            val managerClass = Class.forName("android.media.MediaServiceManager")
+            initializer.getMethod("setMediaServiceManager", managerClass)
+                .invoke(null, managerClass.getConstructor().newInstance())
+        }
+    }
+
+    /** The cast slider's write path: rebuild the controller from the token in [session] and push
+     *  the level through setVolumeTo, which drives the remote (cast) device's own volume. */
+    override fun setSessionVolume(session: Bundle, level: Int): Boolean {
+        val ctx = context ?: return false
+        ensureMediaServiceManager()
+        return try {
+            session.classLoader = javaClass.classLoader
+            @Suppress("DEPRECATION")
+            val token = session.getParcelable("token") as? MediaSession.Token ?: return false
+            MediaController(ctx, token).setVolumeTo(level, 0)
+            true
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
     private fun releaseEnhancer() {
         runCatching { enhancer?.release() }
         enhancer = null
@@ -234,12 +336,15 @@ class UserService() : IUserService.Stub() {
         }
 
     private companion object {
+        /**
+         * What a line of `appops query-op` output looks like when it is a package name, so error
+         * text and blank lines can't slip into the result. Each segment starts with a letter or
+         * underscore and there is at least one dot, as real package names require.
+         */
+        val PACKAGE_NAME_RE = Regex("^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z0-9_]+)+$")
+
         /** AudioPlaybackConfiguration.PLAYER_STATE_STARTED — the player is actively running. */
         const val PLAYER_STATE_STARTED = 2
-
-        /** Ceiling on the loudness boost (mB). +6 dB is the app's maximum; this is the hard stop
-         *  in the privileged process, so a bad caller can't drive the output arbitrarily loud. */
-        const val MAX_GAIN_MB = 600
 
         /**
          * AudioAttributes usages that represent audio the user is actually listening to

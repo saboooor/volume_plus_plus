@@ -56,6 +56,9 @@ object PortugueseStrings : Strings() {
     override fun volumeStepDown(channel: String) = "Diminuir $channel um passo"
     override fun volumeStepUp(channel: String) = "Aumentar $channel um passo"
 
+    override fun settingStepDown(setting: String) = "Diminuir $setting"
+    override fun settingStepUp(setting: String) = "Aumentar $setting"
+
     override val streamMedia get() = "Mídia"
     override val streamCall get() = "Chamada"
     override val streamRing get() = "Toque"
@@ -137,6 +140,24 @@ object PortugueseStrings : Strings() {
         "O root foi concedido, mas o auxiliar privilegiado nunca respondeu."
     override val rootUseShizukuInstead get() = "Usar o Shizuku em vez disso"
 
+    override val bankingFixTitle get() = "App do banco acusando o Volume++?"
+    override val bankingFixBody get() =
+        "Como o Volume++ foi instalado pelo GitHub, alguns apps de banco o identificam como vindo " +
+            "de uma \"loja de apps não oficial\". O Volume++ pode se registrar de novo como uma " +
+            "instalação da Play Store para resolver isso — suas configurações são mantidas e " +
+            "nenhum recurso muda."
+    override val bankingFixAction get() = "Corrigir agora"
+    override val bankingFixConfirmTitle get() = "Corrigir a detecção dos apps de banco"
+    override val bankingFixConfirmBody get() =
+        "O Volume++ vai se reinstalar no lugar para atualizar a origem da instalação. Ele fecha e " +
+            "abre de novo uma vez — isso é normal e nada é perdido. Você vai precisar fazer isso de " +
+            "novo após cada atualização pelo GitHub."
+    override val bankingFixConfirmButton get() = "Reinstalar"
+    override val bankingFixDone get() = "Pronto — o Volume++ agora aparece como instalado pela Play Store."
+    override val bankingFixFailed get() =
+        "Não foi possível atualizar a origem da instalação. Verifique se o auxiliar privilegiado " +
+            "está conectado e tente de novo."
+
     // ── aba Painel ──────────────────────────────────────────────────────────────────────────────
 
     override val overlayTitle get() = "Painel"
@@ -184,9 +205,50 @@ object PortugueseStrings : Strings() {
         "O botão CONFIGURAÇÕES / VER MAIS do painel abre o Volume++ em vez das " +
             "configurações de som do Android."
 
+    override val overlayOpenExpanded get() = "Abrir o painel expandido"
+    override val overlayOpenExpandedDetail get() =
+        "O primeiro toque numa tecla de volume abre o painel completo — cada canal e um " +
+            "controlo por app em reprodução — em vez do painel compacto."
+
+    override val overlayAppsFirst get() = "Controlos de apps primeiro"
+    override val overlayAppsFirstDetail get() =
+        "No painel expandido, os controlos das apps em reprodução ficam acima das linhas " +
+            "de canais em vez de abaixo."
+
+    override val overlayLiveCaption get() = "Botão de Legenda Instantânea"
+    override val overlayLiveCaptionDetail get() =
+        "Adiciona ao painel um botão de Legenda Instantânea, como nos Pixel. Ativar e desativar " +
+            "a legenda requer o Shizuku ou root; sem eles, o botão abre as configurações dela."
+
+    override val overlayMediaBoost get() = "Amplificador de volume de mídia"
+    override fun overlayMediaBoostDetail(maxPercent: Int) =
+        "Em 100%, pressione Aumentar volume duas vezes para ir ainda mais alto — até " +
+            "${percent(maxPercent)}."
+    override val overlayMediaBoostUnavailable get() =
+        "Este dispositivo não deixa o Volume++ amplificar o volume. O Shizuku ou root podem " +
+            "tornar isso possível."
+    override fun overlayMediaBoostInfo(gainMillibels: Int) =
+        "O amplificador pede até ${boostDecibels(gainMillibels)} dB de ganho em cima de um volume " +
+            "que já está no máximo, então a saída passa do que o fabricante ajustou para os " +
+            "alto-falantes.\n\n" +
+            "Espere distorção em trechos altos e tenha cuidado com fones de ouvido: ouvir por muito " +
+            "tempo com o volume amplificado pode prejudicar sua audição. O reforço se desliga " +
+            "sozinho sempre que você desce abaixo de 100% ou muda a saída de áudio."
+    override val overlayMediaBoostLimit get() = "Volume amplificado máximo"
+    override val overlayMediaBoostLimitInfo get() =
+        "Define o teto, não o volume atual. Aumentá-lo não deixa o som mais alto; use Aumentar " +
+            "volume para aumentar o reforço. Diminuí-lo limita na hora um reforço ativo.\n\n" +
+            "Cada 5 pontos percentuais representam 1,5 dB de ganho alvo, não uma porcentagem " +
+            "linear de amplitude. O aumento real depende do dispositivo e do áudio."
+    override val overlayRememberAppVolumes get() = "Lembrar o volume de cada app"
+    override val overlayRememberAppVolumesDetail get() =
+        "Um app toca no nível que você deu a ele da última vez, em vez de começar no máximo. " +
+            "Volte um app para 100% para esquecer. Precisa do Shizuku ou root, como os próprios " +
+            "controles por app."
+
     // ── bloco das Configurações rápidas ─────────────────────────────────────────────────────────
 
-    override val qsTileLabel get() = "Painel do Volume++"
+    override val qsTileLabel get() = "Painel de volume"
 
     override val overlayQuickTile get() = "Bloco das Configurações rápidas"
     override val overlayQuickTileDetail get() =
@@ -246,13 +308,17 @@ object PortugueseStrings : Strings() {
     override fun editStyleTitle(style: String) = "Editar $style"
 
     override fun editStyleIntro(style: String) =
-        "Personalize este estilo separadamente. A posição e as cores são editadas à parte, e apenas " +
-            "$style é alterado."
+        "Personalize este estilo separadamente. A posição, a largura e as cores são editadas à " +
+            "parte, e apenas $style é alterado."
 
     override val editPosition get() = "Editar a posição"
     override val editPositionHint get() =
         "O painel real abre sobre a sua tela — arraste-o exatamente para onde quiser e depois salve " +
             "ou cancele na barra flutuante."
+    override val editWidth get() = "Editar a largura"
+    override val editWidthHint get() =
+        "A largura do painel expandido, separada para retrato e paisagem. O painel real abre sobre " +
+            "a sua tela — ajuste a largura e depois salve ou cancele."
     override val editColours get() = "Editar as cores"
     override val editColoursHint get() =
         "O painel abre sobre a sua tela — toque em uma parte dele (ou em uma amostra), ajuste a cor " +
@@ -260,26 +326,34 @@ object PortugueseStrings : Strings() {
 
     override val editRestoreDefaults get() = "Restaurar os padrões"
     override val editRestoreDefaultsHint get() =
-        "Desfaz as suas edições neste estilo. A posição e as cores são " +
+        "Desfaz as suas edições neste estilo. A posição, a largura e as cores são " +
             "restauradas separadamente, e nenhum outro estilo é alterado."
     override val editRestorePosition get() = "Restaurar a posição padrão"
+    override val editRestoreWidth get() = "Restaurar a largura padrão"
     override val editRestoreColours get() = "Restaurar as cores padrão"
 
     override fun editRestorePositionBody(style: String) =
         "Voltar todos os painéis do $style para onde eles ficam por padrão, em retrato e em " +
             "paisagem? As cores dele são mantidas."
     override fun editRestoreColoursBody(style: String) =
-        "Voltar todas as cores do $style para as que este estilo traz? O lugar onde você o " +
-            "posicionou é mantido."
+        "Voltar todas as cores do $style para as que este estilo traz, e o painel expandido para " +
+            "opacidade total? O lugar onde você o posicionou é mantido."
+    override fun editRestoreWidthBody(style: String) =
+        "Voltar o painel expandido do $style para a largura padrão, em retrato e em paisagem? " +
+            "A posição e as cores são mantidas."
     override val editRestoreConfirm get() = "Restaurar"
 
     override fun editRestoredPosition(style: String) = "Posição do $style restaurada"
     override fun editRestoredColours(style: String) = "Cores do $style restauradas"
+    override fun editRestoredWidth(style: String) = "Largura do $style restaurada"
 
     override val editWhichLayout get() = "Qual orientação?"
     override val editWhichLayoutBody get() =
         "Retrato e paisagem são posicionados separadamente. A tela gira para a orientação que você " +
             "escolher, para que posicione o painel exatamente como ele vai aparecer."
+    override val editWhichLayoutWidthBody get() =
+        "Retrato e paisagem têm cada um a sua própria largura. A tela gira para a orientação que " +
+            "você escolher, para que ajuste o painel exatamente como ele vai aparecer."
 
     override val orientationPortrait get() = "Retrato"
     override val orientationLandscape get() = "Paisagem"
@@ -288,12 +362,24 @@ object PortugueseStrings : Strings() {
 
     override val liveEditPositionHint get() = "Arraste o painel ou digite X / Y (dp)"
     override val liveEditResetPosition get() = "Redefinir a posição"
+    override val liveEditWidthHint get() =
+        "Deslize para ajustar a largura do painel nesta orientação"
+    override val liveEditResetWidth get() = "Redefinir a largura"
     override val liveEditColourHint get() =
         "Toque no painel ou em uma amostra e depois ajuste ou digite uma cor"
     override val liveEditUseDefault get() = "Usar o padrão"
     override val liveEditPickFromScreen get() = "Escolher da tela"
     override val liveEditUseSystemColours get() = "Usar as cores do sistema"
 
+    override val liveEditSheetWidth get() = "Largura do painel"
+    override val liveEditSheetOpacity get() = "Opacidade do painel"
+    override val liveEditSheetPosition get() = "Posição do painel"
+    override val sheetPositionStock get() = "Original"
+    override val sheetPositionBottom get() = "Embaixo"
+    override val sheetPositionBottomLeft get() = "Embaixo à esquerda"
+    override val sheetPositionBottomRight get() = "Embaixo à direita"
+    override val sheetPositionCentre get() = "Centro"
+    override val sheetPositionTop get() = "Em cima"
     override val liveEditComponentMain get() = "Principal"
     override val liveEditComponentExpanded get() = "Expandido"
     override val liveEditComponentOutput get() = "Saída"
@@ -379,6 +465,7 @@ object PortugueseStrings : Strings() {
     override val panelAudioWillPlayOn get() = "O áudio será reproduzido em"
     override val panelCallingOn get() = "Chamando em"
     override val panelConnectADevice get() = "Conectar um dispositivo"
+    override val panelCastVolume get() = "Volume da transmissão"
     override val outputThisPhone get() = "Este telefone"
     override val outputWiredHeadphones get() = "Fones com fio"
     override val outputUsbHeadphones get() = "Fones USB"

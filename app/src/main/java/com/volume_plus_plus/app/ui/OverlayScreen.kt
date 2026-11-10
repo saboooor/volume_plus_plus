@@ -49,6 +49,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -68,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlin.math.roundToInt
 import com.volume_plus_plus.app.R
+import com.volume_plus_plus.app.audio.BoostPolicy
 import com.volume_plus_plus.app.config.AppConfig
 import com.volume_plus_plus.app.data.OverlayCustomizationPrefs
 import com.volume_plus_plus.app.data.OverlayPrefs
@@ -80,6 +82,7 @@ import com.volume_plus_plus.app.overlay.MediaBooster
 import com.volume_plus_plus.app.overlay.OverlayController
 import com.volume_plus_plus.app.overlay.OverlayVersion
 import com.volume_plus_plus.app.overlay.StepHaptics
+import com.volume_plus_plus.app.overlay.liveCaptionAvailable
 import com.volume_plus_plus.app.permissions.rememberPermissionState
 import com.volume_plus_plus.app.service.VolumePanelTileService
 import kotlinx.coroutines.flow.first
@@ -159,11 +162,17 @@ fun OverlayScreen(
         // Colours are shared across orientations, so edit them in whatever way the device is held now.
         onEditColors = { launchLiveEdit(deviceOrientation, LiveEditMode.COLOR) },
         onEditPosition = { orientation -> launchLiveEdit(orientation, LiveEditMode.POSITION) },
-        // Both restores write straight through for this version alone; the overlay re-reads its
+        // Width is per orientation too, so it's edited in the layout the user picks.
+        onEditWidth = { orientation -> launchLiveEdit(orientation, LiveEditMode.WIDTH) },
+        // The restores write straight through for this version alone; the overlay re-reads its
         // customization every time it renders, so the next panel already comes up restored.
         onRestorePosition = {
             customizationPrefs.restoreDefaultPosition(version)
             scope.launch { snackbar.showSnackbar(s.editRestoredPosition(version.label)) }
+        },
+        onRestoreWidth = {
+            customizationPrefs.restoreDefaultWidth(version)
+            scope.launch { snackbar.showSnackbar(s.editRestoredWidth(version.label)) }
         },
         onRestoreColors = {
             customizationPrefs.restoreDefaultColors(version)
@@ -189,10 +198,22 @@ private fun OverlaySetup(
     var floatingButton by remember { mutableStateOf(prefs.isFloatingButtonEnabled()) }
     var onlyVolumeMixing by remember { mutableStateOf(prefs.isOnlyVolumeMixingEnabled()) }
     var popupDuration by remember { mutableStateOf(prefs.getPopupDurationSeconds()) }
+    var openExpanded by remember { mutableStateOf(prefs.isOpenExpandedEnabled()) }
+    var appsFirst by remember { mutableStateOf(prefs.isAppsFirstEnabled()) }
+    var liveCaptionButton by remember { mutableStateOf(prefs.isLiveCaptionButtonEnabled()) }
+    val hasLiveCaption = remember { liveCaptionAvailable(context) }
     var rememberAppVolumes by remember { mutableStateOf(prefs.isRememberAppVolumesEnabled()) }
     var mediaBoost by remember { mutableStateOf(prefs.isMediaBoostEnabled()) }
+    var mediaBoostMaxSteps by remember { mutableIntStateOf(prefs.getMediaBoostMaxSteps()) }
     var boostAvailable by remember {
         mutableStateOf(MediaBooster.availability != MediaBooster.Availability.UNAVAILABLE)
+    }
+    DisposableEffect(Unit) {
+        val listener: () -> Unit = {
+            boostAvailable = MediaBooster.availability != MediaBooster.Availability.UNAVAILABLE
+        }
+        MediaBooster.addStateListener(listener)
+        onDispose { MediaBooster.removeStateListener(listener) }
     }
     var holdFollowScale by remember { mutableStateOf(prefs.getHoldFollowScale()) }
     var holdSettleScale by remember { mutableStateOf(prefs.getHoldSettleScale()) }
@@ -228,8 +249,12 @@ private fun OverlaySetup(
         floatingButton = prefs.isFloatingButtonEnabled()
         onlyVolumeMixing = prefs.isOnlyVolumeMixingEnabled()
         popupDuration = prefs.getPopupDurationSeconds()
+        openExpanded = prefs.isOpenExpandedEnabled()
+        appsFirst = prefs.isAppsFirstEnabled()
+        liveCaptionButton = prefs.isLiveCaptionButtonEnabled()
         rememberAppVolumes = prefs.isRememberAppVolumesEnabled()
         mediaBoost = prefs.isMediaBoostEnabled()
+        mediaBoostMaxSteps = prefs.getMediaBoostMaxSteps()
         // The user may have just set Shizuku or root up on the Mixing tab, which can turn a device
         // that couldn't boost into one that can.
         MediaBooster.refreshAvailability()
@@ -349,6 +374,7 @@ private fun OverlaySetup(
             onCheckedChange = {
                 systemVolumePanel = it
                 prefs.setSystemVolumePanelEnabled(it)
+                if (it) MediaBooster.reset()
             },
             highlight = highlight.value,
             modifier = Modifier.onGloballyPositioned {
@@ -387,15 +413,52 @@ private fun OverlaySetup(
                 },
             )
         }
+        // Applies to every skin — the 7–8 panel expands in place rather than into a sheet, but a
+        // first press can still open it with every row already showing.
+        SettingSwitch(
+            title = s.overlayOpenExpanded,
+            subtitle = s.overlayOpenExpandedDetail,
+            checked = openExpanded,
+            enabled = styleEnabled,
+            onCheckedChange = {
+                openExpanded = it
+                prefs.setOpenExpandedEnabled(it)
+            },
+        )
+        // Applies to every skin: each renderer places its per-app box relative to the stream rows.
+        SettingSwitch(
+            title = s.overlayAppsFirst,
+            subtitle = s.overlayAppsFirstDetail,
+            checked = appsFirst,
+            enabled = styleEnabled,
+            onCheckedChange = {
+                appsFirst = it
+                prefs.setAppsFirstEnabled(it)
+            },
+        )
+        // Only offered where the device has Live Caption at all — elsewhere the button would
+        // toggle nothing, so there is nothing to switch on.
+        if (hasLiveCaption) {
+            SettingSwitch(
+                title = s.overlayLiveCaption,
+                subtitle = s.overlayLiveCaptionDetail,
+                checked = liveCaptionButton,
+                enabled = styleEnabled,
+                onCheckedChange = {
+                    liveCaptionButton = it
+                    prefs.setLiveCaptionButtonEnabled(it)
+                },
+            )
+        }
         // Not tied to `styleEnabled`: the per-app levels are applied by the privileged service
         // whether or not the volume keys open our panel, so this keeps working with the system
         // panel in charge.
         SettingSwitch(
             title = s.overlayMediaBoost,
-            subtitle = if (boostAvailable) s.overlayMediaBoostDetail
+            subtitle = if (boostAvailable) s.overlayMediaBoostDetail(BoostPolicy.percent(mediaBoostMaxSteps))
             else s.overlayMediaBoostUnavailable,
             // The ⓘ carries the distortion and hearing warning, the way the step-haptics row does.
-            info = s.overlayMediaBoostInfo,
+            info = s.overlayMediaBoostInfo(BoostPolicy.gain(mediaBoostMaxSteps)),
             // Greyed with the system-panel switch, since the boost rides on volume keys we no longer
             // handle, and greyed when the platform simply refuses to give us the gain.
             checked = mediaBoost && boostAvailable,
@@ -404,6 +467,26 @@ private fun OverlaySetup(
                 mediaBoost = it
                 prefs.setMediaBoostEnabled(it)
                 if (!it) MediaBooster.reset()
+            },
+        )
+        SettingSlider(
+            title = s.overlayMediaBoostLimit,
+            value = BoostPolicy.percent(mediaBoostMaxSteps) / 100f,
+            valueRange = (BoostPolicy.percent(BoostPolicy.MIN_MAX_STEPS) / 100f)..
+                (BoostPolicy.percent(BoostPolicy.HARD_MAX_STEPS) / 100f),
+            steps = BoostPolicy.HARD_MAX_STEPS - BoostPolicy.MIN_MAX_STEPS - 1,
+            valueText = s.overlayMediaBoostValue(
+                BoostPolicy.percent(mediaBoostMaxSteps), BoostPolicy.gain(mediaBoostMaxSteps),
+            ),
+            info = s.overlayMediaBoostLimitInfo,
+            enabled = styleEnabled && mediaBoost && boostAvailable,
+            onValueChange = { value ->
+                val limit = BoostPolicy.normalizeMaxSteps(
+                    ((value * 100 - 100) / BoostPolicy.PERCENT_PER_STEP).roundToInt(),
+                )
+                mediaBoostMaxSteps = limit
+                prefs.setMediaBoostMaxSteps(limit)
+                MediaBooster.setMaxSteps(limit)
             },
         )
         SettingSwitch(
@@ -573,6 +656,7 @@ private fun SettingSlider(
     valueLabel: ((Float) -> String)? = null,
     onValueChange: (Float) -> Unit,
     onStepChange: ((Float) -> Unit)? = null,
+    valueText: String? = null,
 ) {
     val s = strings()
     // One notch of the slider's own grid, so a stepped value always lands on a position a drag could
@@ -601,7 +685,7 @@ private fun SettingSlider(
                     Text(
                         // Rounded, not truncated: a stepper makes an off-by-one readout obvious,
                         // where a drag past it never stopped long enough to be noticed.
-                        text = valueLabel?.invoke(value) ?: strings().percent((value * 100).roundToInt()),
+                        text = valueText ?: valueLabel?.invoke(value) ?: strings().percent((value * 100).roundToInt()),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
                         else disabledContentColor(),
